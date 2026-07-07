@@ -80,10 +80,36 @@ def get_lectures(folder_id, session):
     return response.json()
 
 
+def get_lecture_asset(delivery_id, session):
+    response = session.post(
+        "https://scs.hosted.panopto.com/Panopto/Pages/Viewer/DeliveryInfo.aspx",
+        data={"deliveryId": delivery_id, "responseType": "json"},
+        headers={
+            "x-csrf-token": session.cookies.get("csrfToken"),
+            "x-requested-with": "XMLHttpRequest",
+        },
+    )
+
+    return response.json()
+
+
+def get_assets(lectures, session):
+    results = lectures["d"]["Results"]
+    assets = []
+
+    for result in results:
+        d_id = result["DeliveryID"]
+        asset = get_lecture_asset(d_id, session)
+        assets.append(asset)
+
+    return assets
+
+
 def main():
     cookies = get_cookies()
     folder_id = get_folder_id(cookies)
     lectures = get_lectures(folder_id, cookies)
+    result = get_assets(lectures, cookies)
 
 
 if __name__ == "__main__":
