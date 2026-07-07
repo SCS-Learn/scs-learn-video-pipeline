@@ -3,7 +3,7 @@ import os
 import json
 from dotenv import load_dotenv
 import requests
-import argparse 
+import argparse
 
 """
 Log into Panopto via CMU SSO/Duo in a browser and return a requests
@@ -54,7 +54,9 @@ the matching folder's ID, raising if no match is found.
 def get_folder_id(search_term, session):
     csrf_token = session.cookies.get("csrfToken")
     if csrf_token is None:
-        raise RuntimeError("csrfToken missing — check that login/Duo actually completed.")
+        raise RuntimeError(
+            "csrfToken missing — check that login/Duo actually completed."
+        )
 
     response = session.get(
         "https://scs.hosted.panopto.com/Panopto/Api/Folders",
@@ -92,7 +94,9 @@ Panopto folder.
 def get_lectures(folder_id, session):
     csrf_token = session.cookies.get("csrfToken")
     if csrf_token is None:
-        raise RuntimeError("csrfToken missing — check that login/Duo actually completed.")
+        raise RuntimeError(
+            "csrfToken missing — check that login/Duo actually completed."
+        )
 
     response = session.post(
         "https://scs.hosted.panopto.com/Panopto/Services/Data.svc/GetSessions",
@@ -115,7 +119,9 @@ Fetch asset info (video URLs, etc.) for a single lecture given its delivery ID.
 def get_lecture_asset(delivery_id, session):
     csrf_token = session.cookies.get("csrfToken")
     if csrf_token is None:
-        raise RuntimeError("csrfToken missing — check that login/Duo actually completed.")
+        raise RuntimeError(
+            "csrfToken missing — check that login/Duo actually completed."
+        )
 
     response = session.post(
         "https://scs.hosted.panopto.com/Panopto/Pages/Viewer/DeliveryInfo.aspx",
@@ -153,7 +159,7 @@ Build one manifest entry in the shape panopto_download.py expects:
 
 
 def build_lecture_entry(result, asset, course):
-    delivery = asset.get("Delivery", asset) 
+    delivery = asset.get("Delivery", asset)
 
     streams = []
     for s in delivery.get("Streams", []):
@@ -161,11 +167,13 @@ def build_lecture_entry(result, asset, course):
         if not url:
             continue
         stream_type = "camera" if s.get("StreamType") == 1 else "screen"
-        streams.append({
-            "type": stream_type,
-            "isHls": ".m3u8" in url,
-            "url": url,
-        })
+        streams.append(
+            {
+                "type": stream_type,
+                "isHls": s.get("ViewerMediaFileTypeName") == "hls",
+                "url": url,
+            }
+        )
 
     chapters = delivery.get("Timestamps", [])
 
