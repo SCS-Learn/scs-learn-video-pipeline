@@ -3,6 +3,7 @@ import os
 import json
 from dotenv import load_dotenv
 import requests
+import argparse 
 
 """
 Log into Panopto via CMU SSO/Duo in a browser and return a requests
@@ -50,7 +51,7 @@ the matching folder's ID, raising if no match is found.
 """
 
 
-def get_folder_id(session):
+def get_folder_id(search_term, session):
     csrf_token = session.cookies.get("csrfToken")
     if csrf_token is None:
         raise RuntimeError("csrfToken missing — check that login/Duo actually completed.")
@@ -60,7 +61,7 @@ def get_folder_id(session):
         params={
             "parentId": "null",
             "folderSet": 1,
-            "searchTerm": "Spring 2026:  10-301/601 Introduction to Machine Learning",
+            "searchTerm": search_term,
             "includeMyFolder": "false",
             "includePersonalFolders": "true",
             "page": 0,
@@ -76,7 +77,7 @@ def get_folder_id(session):
 
     folders = response.json()
     if not folders:
-        raise RuntimeError("No folder found matching search term.")
+        raise RuntimeError(f"No folder found matching {search_term}")
     folder_id = folders[0]["Id"]
 
     return folder_id
@@ -198,13 +199,17 @@ def build_manifest(assets, course, out_path="manifest.json"):
 
 
 def main():
-    course = "10-301"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--semester", required=True, help='e.g. "Spring 2026"')
+    parser.add_argument("--course", required=True, help='e.g. "10-301/601"')
+    args = parser.parse_args()
+    search_term = f"{args.semester}:  {args.course}"
 
     session = get_cookies()
-    folder_id = get_folder_id(session)
+    folder_id = get_folder_id(search_term, session)
     lectures = get_lectures(folder_id, session)
     assets = get_assets(lectures, session)
-    build_manifest(assets, course, out_path="manifest.json")
+    build_manifest(assets, args.course, out_path="manifest.json")
 
 
 if __name__ == "__main__":
