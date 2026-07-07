@@ -3,7 +3,10 @@ import os
 from dotenv import load_dotenv
 import requests
 
-
+"""
+Log into Panopto via CMU SSO/Duo in a browser and return a requests
+Session pre-loaded with the resulting authenticated cookies.
+"""
 def get_cookies():
     load_dotenv()
 
@@ -38,6 +41,10 @@ def get_cookies():
     return session
 
 
+"""
+Search Panopto folders for the course by semester and course number and return 
+the matching folder's ID, raising if no match is found.
+"""
 def get_folder_id(session):
     response = session.get(
         "https://scs.hosted.panopto.com/Panopto/Api/Folders",
@@ -66,6 +73,10 @@ def get_folder_id(session):
     return folder_id
 
 
+"""
+Fetch the list of lecture sessions (up to 100) contained in the given
+Panopto folder.
+"""
 def get_lectures(folder_id, session):
     response = session.post(
         "https://scs.hosted.panopto.com/Panopto/Services/Data.svc/GetSessions",
@@ -80,6 +91,9 @@ def get_lectures(folder_id, session):
     return response.json()
 
 
+"""
+Fetch asset info (video URLs, etc.) for a single lecture given its delivery ID.
+"""
 def get_lecture_asset(delivery_id, session):
     response = session.post(
         "https://scs.hosted.panopto.com/Panopto/Pages/Viewer/DeliveryInfo.aspx",
@@ -93,6 +107,10 @@ def get_lecture_asset(delivery_id, session):
     return response.json()
 
 
+"""
+Given the lectures list response, fetch and return the asset info for
+every lecture in it.
+"""
 def get_assets(lectures, session):
     results = lectures["d"]["Results"]
     assets = []
