@@ -35,12 +35,12 @@ def convert_mp4_to_wav():
 def generate_transcript():
     load_dotenv()
 
-    device = "cpu"
+    device = "cuda"
     audio_file = "data/15210-lecture12/camera.wav"
     batch_size = 16
-    compute_type = "int8"
+    compute_type = "float16"
 
-    model = whisperx.load_model("tiny", device, compute_type=compute_type)
+    model = whisperx.load_model("large-v2", device, compute_type=compute_type)
     audio = whisperx.load_audio(audio_file)
     result = model.transcribe(audio, batch_size=batch_size)
 
