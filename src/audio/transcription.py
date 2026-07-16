@@ -71,7 +71,19 @@ def generate_transcript():
     with open("data/transcription/transcript.json", "w") as f:
         json.dump(result["segments"], f, indent=2)
 
-    print(result["segments"])
 
+def get_instructor_label():
+    with open("data/transcription/transcript.json") as f:
+        segments = json.load(f)
 
-generate_transcript()
+    total_speak_time = {}
+
+    for seg in segments:
+        speaker = seg.get("speaker")
+        if speaker is None:
+            continue
+        duration = seg["end"] - seg["start"]
+        total_speak_time[speaker] = total_speak_time.get(speaker, 0) + duration
+
+    instructor_speaker = max(total_speak_time, key=total_speak_time.get)
+    return instructor_speaker
