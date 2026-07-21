@@ -4,6 +4,7 @@ import json
 from dotenv import load_dotenv
 import requests
 import argparse
+import getpass
 
 """
 Log into Panopto via CMU SSO/Duo in a browser and return a requests
@@ -22,8 +23,7 @@ def get_cookies():
         page.get_by_role("link", name="Sign in").click()
 
         sso_id = os.getenv("SSO_ID")
-        print("Input your SSO password. ")
-        sso_pass = input()
+        sso_pass = getpass.getpass("Enter your SSO password: ")
         page.get_by_role("textbox", name="AndrewID").fill(f"{sso_id}")
         page.locator("#passwordinput").fill(f"{sso_pass}")
         page.get_by_role("button", name="Login").click()
