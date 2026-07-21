@@ -89,15 +89,16 @@ def get_instructor_label():
     instructor_speaker = max(total_speak_time, key=total_speak_time.get)
     return instructor_speaker
 
+
 def identify_student_questions(segments, instructor_label):
     load_dotenv()
 
-    client = anthropic.Anthropic(api_key = os.getenv("ANTHROPIC_API_KEY"))
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     non_instructor_segments = [
         seg for seg in segments if seg.get("speaker") != instructor_label
     ]
-    
+
     if not non_instructor_segments:
         for seg in segments:
             seg["is_student_question"] = False
@@ -147,25 +148,27 @@ def identify_student_questions(segments, instructor_label):
             f"Expected {len(non_instructor_segments)} classifications, "
             f"got {len(result_by_index)} — check for missing/duplicate indices."
         )
-    
+
     for i, seg in enumerate(non_instructor_segments):
         seg["is_student_question"] = result_by_index[i]
-    
+
     for seg in segments:
         if seg.get("speaker") == instructor_label:
             seg["is_student_question"] = False
-    
+
     return segments
+
 
 def main():
     with open("data/transcription/transcript.json") as f:
         segments = json.load(f)
-    
+
     instructor_label = get_instructor_label()
 
     segments = identify_student_questions(segments, instructor_label)
     with open("data/transcription/transcript_classified.json", "w") as f:
         json.dump(segments, f, indent=2)
+
 
 if __name__ == "__main__":
     main()

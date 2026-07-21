@@ -22,7 +22,8 @@ def get_cookies():
         page.get_by_role("link", name="Sign in").click()
 
         sso_id = os.getenv("SSO_ID")
-        sso_pass = os.getenv("SSO_PASSWORD")
+        print("Input your SSO password. ")
+        sso_pass = input()
         page.get_by_role("textbox", name="AndrewID").fill(f"{sso_id}")
         page.locator("#passwordinput").fill(f"{sso_pass}")
         page.get_by_role("button", name="Login").click()
