@@ -9,7 +9,7 @@ from src.audio.audio import merge_speaker_spans
 def render_card(text, width=1920, height=1080, out_path="card.png"):
     img = Image.new("RGB", (width, height), color=(20, 20, 30))
     draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", size=48)
+    font = ImageFont.load_default(size=48)
 
     wrapped = textwrap.fill(text, width=40)
     bbox = draw.multiline_textbbox((0, 0), wrapped, font=font)
