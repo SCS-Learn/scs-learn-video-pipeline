@@ -160,6 +160,9 @@ def identify_student_questions(segments, instructor_label):
 
 
 def main():
+    convert_mp4_to_wav()
+    generate_transcript()
+
     with open("data/transcription/transcript.json") as f:
         segments = json.load(f)
 
