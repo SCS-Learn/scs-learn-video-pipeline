@@ -104,3 +104,9 @@ typing_extensions==4.16.0
 urllib3==2.7.0
 whisperx==3.8.6
 yarl==1.24.2
+
+# Audio pipeline: question classification, captions, student-audio muting.
+# Unpinned so pip resolves compatible versions; run `pip freeze` to pin later.
+anthropic
+pysrt
+soundfile

@@ -69,6 +69,7 @@ def generate_transcript():
     diarize_segments = diarize_model(audio)
 
     result = whisperx.assign_word_speakers(diarize_segments, result)
+    os.makedirs("data/transcription", exist_ok=True)
     with open("data/transcription/transcript.json", "w") as f:
         json.dump(result["segments"], f, indent=2)
 
