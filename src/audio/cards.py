@@ -26,14 +26,11 @@ def render_card(text, width=1920, height=1080, out_path="card.png"):
 
 
 def get_span_text(segments, start, end, instructor_label):
-    words = []
+    texts = []
     for seg in segments:
-        for word in seg.get("words", []):
-            if word.get("speaker") == instructor_label:
-                continue
-            if start <= word["start"] < end:
-                words.append(word["word"])
-    return " ".join(words)
+        if seg["start"] < end and seg["end"] > start:
+            texts.append(seg["text"].strip())
+    return " ".join(texts)
 
 
 def overlay_question_cards(
@@ -100,6 +97,9 @@ if __name__ == "__main__":
     instructor_label = get_instructor_label()
     intervals = merge_speaker_spans(segments, instructor_label)
     question_intervals = [iv for iv in intervals if iv["is_student_question"]]
+
+    for i, iv in enumerate(question_intervals):
+        print(f"{i}: {iv['start']:.2f} - {iv['end']:.2f}")
 
     overlay_question_cards(
         screen_path="data/15210-lecture12/screen.mp4",

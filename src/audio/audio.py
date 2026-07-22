@@ -5,7 +5,7 @@ import json
 from src.audio.transcription import get_instructor_label
 
 
-def merge_speaker_spans(segments, instructor_label, gap_tolerance=0.3):
+def merge_speaker_spans(segments, instructor_label, gap_tolerance=1.5):
     intervals = []
     current_start = None
     current_end = None
