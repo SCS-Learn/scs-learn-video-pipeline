@@ -81,11 +81,11 @@ def overlay_question_cards(
         "-map",
         "[outv]",
         "-c:v",
-        "libx264",
+        "h264_nvenc",
         "-crf",
         "18",
         "-preset",
-        "medium",
+        "fast",
         out_path,
     ]
 
