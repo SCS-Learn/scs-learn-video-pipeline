@@ -96,9 +96,13 @@ def generate_captions(segments, output_path="captions.srt"):
     return subs
 
 
-if __name__ == "__main__":
+def main():
     with open("data/transcription/transcript_classified.json") as f:
         segments = json.load(f)
 
     # polished_segments = polish_captions(segments)
     generate_captions(segments, output_path="data/transcription/captions.srt")
+
+
+if __name__ == "__main__":
+    main()

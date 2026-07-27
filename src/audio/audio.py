@@ -116,11 +116,11 @@ def put_audio_into_video(video_path, wav_path, out_video_path):
     return out_video_path
 
 
-if __name__ == "__main__":
+def main():
     with open("data/transcription/transcript_classified.json") as f:
         segments = json.load(f)
 
-    instructor_label = get_instructor_label()
+    instructor_label = get_instructor_label(segments)
     intervals = merge_speaker_spans(segments, instructor_label)
 
     mute_student_audio(
@@ -134,3 +134,7 @@ if __name__ == "__main__":
         wav_path="data/15210-lecture12/camera_muted.wav",
         out_video_path="data/15210-lecture12/camera_muted.mp4",
     )
+
+
+if __name__ == "__main__":
+    main()
