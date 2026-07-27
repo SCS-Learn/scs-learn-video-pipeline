@@ -90,11 +90,11 @@ def overlay_question_cards(
     return out_path
 
 
-if __name__ == "__main__":
+def main():
     with open("data/transcription/transcript_classified.json") as f:
         segments = json.load(f)
-
-    instructor_label = get_instructor_label()
+    
+    instructor_label = get_instructor_label(segments)
     intervals = merge_speaker_spans(segments, instructor_label)
     question_intervals = [iv for iv in intervals if iv["is_student_question"]]
 
@@ -108,3 +108,6 @@ if __name__ == "__main__":
         instructor_label=instructor_label,
         out_path="data/15210-lecture12/screen_with_cards.mp4",
     )
+
+if __name__ == "__main__":
+    main()

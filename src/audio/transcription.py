@@ -165,7 +165,7 @@ def main():
     generate_transcript()
 
     with open("data/transcription/transcript.json") as f:
-            segments = json.load(f)
+        segments = json.load(f)
 
     instructor_label = get_instructor_label(segments)
 
