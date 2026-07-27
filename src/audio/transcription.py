@@ -73,10 +73,7 @@ def generate_transcript():
         json.dump(result["segments"], f, indent=2)
 
 
-def get_instructor_label():
-    with open("data/transcription/transcript.json") as f:
-        segments = json.load(f)
-
+def get_instructor_label(segments):
     total_speak_time = {}
 
     for seg in segments:
@@ -92,7 +89,6 @@ def get_instructor_label():
 
 def identify_student_questions(segments, instructor_label):
     load_dotenv()
-
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     non_instructor_segments = [
@@ -112,21 +108,25 @@ def identify_student_questions(segments, instructor_label):
     prompt = f"""You are analyzing a lecture transcript. Below is a list of
     segments spoken by someone other than the instructor (labeled "{instructor_label}").
 
-    For each segment, decide whether it is a STUDENT QUESTION — an actual
-    question being asked to the instructor — as opposed to a comment, aside,
-    background noise, or non-question remark.
+    For each segment:
+    1. Decide whether it is a STUDENT QUESTION — an actual question being asked
+    to the instructor — as opposed to a comment, aside, background noise, or
+    non-question remark.
+    2. If it IS a question, also provide a cleaned-up version of the text: remove
+    filler words ("um", "like"), remove any names mentioned, and phrase it as
+    a clear, concise question suitable for display on a card. If it is NOT a
+    question, return the original text unchanged.
 
     Segments:
     {json.dumps(indexed_input, indent=2)}
 
-    Respond with ONLY a JSON array, no other text, no markdown fences, in this
-    exact format:
+    Respond with ONLY a JSON array, no other text, no markdown fences:
     [
-    {{"index": 0, "is_student_question": true}},
-    {{"index": 1, "is_student_question": false}}
+    {{"index": 0, "is_student_question": true, "text": "A clean version of the question..."}},
+    {{"index": 1, "is_student_question": false, "text": "original text unchanged"}}
     ]
 
-    Every index from the input must appear exactly once in your response."""
+    Every index must appear exactly once."""
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
@@ -134,23 +134,24 @@ def identify_student_questions(segments, instructor_label):
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw_text = response.content[0].text.strip()
+    first_block = response.content[0]
+    raw_text = first_block.text.strip()
 
     try:
         classifications = json.loads(raw_text)
     except json.JSONDecodeError:
         raise ValueError(f"Claude did not return valid JSON:\n{raw_text}")
 
-    result_by_index = {c["index"]: c["is_student_question"] for c in classifications}
-
+    result_by_index = {c["index"]: c for c in classifications}
     if len(result_by_index) != len(non_instructor_segments):
         raise ValueError(
             f"Expected {len(non_instructor_segments)} classifications, "
-            f"got {len(result_by_index)} — check for missing/duplicate indices."
+            f"got {len(result_by_index)}."
         )
 
     for i, seg in enumerate(non_instructor_segments):
-        seg["is_student_question"] = result_by_index[i]
+        seg["is_student_question"] = result_by_index[i]["is_student_question"]
+        seg["text"] = result_by_index[i]["text"]
 
     for seg in segments:
         if seg.get("speaker") == instructor_label:
@@ -164,13 +165,13 @@ def main():
     generate_transcript()
 
     with open("data/transcription/transcript.json") as f:
-        segments = json.load(f)
+            segments = json.load(f)
 
-    instructor_label = get_instructor_label()
+    instructor_label = get_instructor_label(segments)
 
-    segments = identify_student_questions(segments, instructor_label)
+    classified_segments = identify_student_questions(segments, instructor_label)
     with open("data/transcription/transcript_classified.json", "w") as f:
-        json.dump(segments, f, indent=2)
+        json.dump(classified_segments, f, indent=2)
 
 
 if __name__ == "__main__":

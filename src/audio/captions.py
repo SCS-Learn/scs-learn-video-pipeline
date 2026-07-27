@@ -17,7 +17,10 @@ def generate_captions(segments, output_path="captions.srt"):
 
     index = 1
     for seg in segments:
-        text = " ".join(word["word"] for word in seg.get("words", []))
+        if seg.get("is_student_question"):
+            text = seg["text"]  # already paraphrased by Claude
+        else:
+            text = " ".join(word["word"] for word in seg.get("words", []))
         if not text.strip():
             continue
 
