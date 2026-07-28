@@ -172,7 +172,7 @@ def build_lecture_entry(result, asset, course):
             {
                 "type": stream_type,
                 "isHls": s.get("ViewerMediaFileTypeName") == "hls",
-                "url": url,
+                "url": url
             }
         )
 

@@ -157,7 +157,7 @@ def main():
         print(f"{i}: {iv['start']:.2f} - {iv['end']:.2f}")
 
     overlay_question_cards(
-        screen_path="data/15210-lecture12/screen.mp4",
+        screen_path="data/15210-lecture12/screen_sync.mp4",
         segments=segments,
         question_intervals=question_intervals,
         instructor_label=instructor_label,
