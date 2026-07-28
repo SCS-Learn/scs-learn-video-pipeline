@@ -57,7 +57,7 @@ def render_card(
     return out_path
 
 
-def get_span_text(segments, start, end, instructor_label):
+def get_span_text(segments, start, end):
     texts = []
     for seg in segments:
         if seg["start"] < end and seg["end"] > start:
@@ -82,7 +82,7 @@ def overlay_question_cards(
 
     card_paths = []
     for i, iv in enumerate(question_intervals):
-        text = get_span_text(segments, iv["start"], iv["end"], instructor_label)
+        text = get_span_text(segments, iv["start"], iv["end"])
         card_path = f"data/15210-lecture12/cards/card_{i}.png"
         render_card(text, out_path=card_path)
         card_paths.append(card_path)
