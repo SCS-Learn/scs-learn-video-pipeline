@@ -56,6 +56,13 @@ def render_card(
     img.save(out_path)
     return out_path
 
+def get_duration(path):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True, check=True,
+    )
+    return float(result.stdout.strip())
 
 def get_span_text(segments, start, end):
     texts = []
@@ -74,6 +81,8 @@ def overlay_question_cards(
     width=1920,
     height=1080,
 ):
+    duration = get_duration(screen_path)
+
     if not question_intervals:
         subprocess.run(
             ["ffmpeg", "-y", "-i", screen_path, "-c", "copy", out_path], check=True
@@ -110,12 +119,13 @@ def overlay_question_cards(
         "-map",
         "[outv]",
         "-c:v",
-        "h264_nvenc",
+        "libx264",
         "-crf",
         "18",
         "-preset",
-        "fast",
-        "-shortest",
+        "veryfast",
+        "-t",
+        str(duration),
         out_path,
     ]
 
