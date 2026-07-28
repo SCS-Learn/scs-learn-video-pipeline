@@ -56,13 +56,25 @@ def render_card(
     img.save(out_path)
     return out_path
 
+
 def get_duration(path):
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", path],
-        capture_output=True, text=True, check=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return float(result.stdout.strip())
+
 
 def get_span_text(segments, start, end):
     texts = []
@@ -98,7 +110,7 @@ def overlay_question_cards(
 
     cmd = ["ffmpeg", "-y", "-i", screen_path]
     for card_path in card_paths:
-        cmd += ["-loop", "1", "-i", card_path]
+        cmd += ["-loop", "1", "-framerate", "25", "-t", str(duration), "-i", card_path]
 
     filter_parts = []
     current_label = "0:v"
