@@ -115,6 +115,7 @@ def overlay_question_cards(
         "18",
         "-preset",
         "fast",
+        "-shortest",
         out_path,
     ]
 
