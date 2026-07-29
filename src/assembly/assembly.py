@@ -3,10 +3,22 @@ from src.paths import LecturePaths, lecture_parser
 from src.sync import get_duration
 
 
+# Where the picture-in-picture sits. Commit b8b4089 moved it to top-right; the
+# position is a flag now so that choice is visible rather than baked in.
+PIP_POSITIONS = {
+    "bottom-right": "W-w-{m}:H-h-{m}",
+    "top-right": "W-w-{m}:{m}",
+    "bottom-left": "{m}:H-h-{m}",
+    "top-left": "{m}:{m}",
+}
+
+
 def composite_pip(
-    screen_path, camera_path, out_path, duration, pip_width=480, margin=30
+    screen_path, camera_path, out_path, duration, pip_width=480, margin=30,
+    position="bottom-right"
 ):
     pip_height = int(pip_width * 9 / 16)
+    overlay_xy = PIP_POSITIONS[position].format(m=margin)
 
     cmd = [
         "ffmpeg",
@@ -18,7 +30,7 @@ def composite_pip(
         "-filter_complex",
         f"[0:v]scale=1920:1080[main];"
         f"[1:v]scale={pip_width}:{pip_height}[pip];"
-        f"[main][pip]overlay=W-w-{margin}:{margin}[outv]",
+        f"[main][pip]overlay={overlay_xy}[outv]",
         "-map",
         "[outv]",
         "-map",
@@ -62,6 +74,13 @@ def main():
     parser = lecture_parser("Composite the final picture-in-picture video.")
     parser.add_argument("--allow-unanonymized", action="store_true",
                         help="Proceed even if no face-anonymized camera exists")
+    parser.add_argument("--pip-position", default="bottom-right",
+                        choices=sorted(PIP_POSITIONS),
+                        help="Corner for the picture-in-picture")
+    parser.add_argument("--pip-width", type=int, default=480)
+    parser.add_argument("--no-tracked", action="store_true",
+                        help="Use the un-cropped camera even if a tracked crop "
+                             "exists")
     parser.add_argument("--camera-only", action="store_true",
                         help="Also write <key>-camera.mp4: the anonymized camera "
                              "with muted audio and NO screen composited in")
@@ -86,11 +105,16 @@ def main():
     d = get_duration(camera)
 
     if not args.skip_pip:
+        pip_src = camera if args.no_tracked else p.resolve_pip_camera()
+        if pip_src != camera:
+            print(f"[assembly] pip source={pip_src} (instructor-tracked crop)")
         out = composite_pip(
             screen_path=p.screen_with_cards,
-            camera_path=camera,
+            camera_path=pip_src,
             out_path=p.final,
             duration=d,
+            pip_width=args.pip_width,
+            position=args.pip_position,
         )
         print(f"[assembly] wrote {out}")
 

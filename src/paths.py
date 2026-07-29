@@ -96,6 +96,12 @@ class LecturePaths:
     def face_clusters_preview(self):
         return self._p("face_clusters.png")
 
+    # --- stage 8b: instructor tracking (optional) ------------------------
+    @property
+    def camera_tracked(self):
+        """Zoomed crop of the anonymized camera that follows the instructor."""
+        return self._p("camera_muted_anon_tracked.mp4")
+
     # --- stage 9: assembly -----------------------------------------------
     @property
     def key(self):
@@ -129,6 +135,17 @@ class LecturePaths:
     def resolve_transcript_classified(self):
         return self._resolve_legacy(self.transcript_classified,
                                     "transcript_classified.json")
+
+    def resolve_pip_camera(self):
+        """Best available picture-in-picture source, most-processed first.
+
+        The tracked crop is preferred when present: at 480px wide the instructor
+        is only a few dozen pixels tall in the raw wide shot.
+        """
+        for cand in (self.camera_tracked, self.camera_anon, self.camera_muted):
+            if os.path.exists(cand):
+                return cand
+        return self.camera_muted
 
     def resolve_camera_for_assembly(self):
         """Prefer the anonymized camera; fall back to merely muted.
