@@ -483,8 +483,21 @@ def process_chunk(
                 keep.append(box)
         sampled[off] = keep
         n_blur_boxes += len(keep)
+        # A full lecture spends over half an hour in this loop. Without periodic
+        # output there is no way to tell a working job from a hung one, which
+        # matters most for whoever is not going to read the source.
+        if n_infer % 500 == 0:
+            el = time.time() - t0
+            rate = n_infer / max(el, 1e-9)
+            eta = (n_frames / detect_every - n_infer) / max(rate, 1e-9)
+            print(f"[face_anon] {label}pass1 {off}/{n_frames} frames "
+                  f"({100.0 * off / max(n_frames, 1):.1f}%), {n_infer} detections "
+                  f"@ {rate:.1f}/s, {len(tracks)} tracks, ETA {eta / 60:.1f} min",
+                  flush=True)
     cap.release()
     infer_dt = time.time() - t0
+    print(f"[face_anon] {label}pass1 done: {n_infer} detections in "
+          f"{infer_dt / 60:.1f} min, {n_blur_boxes} boxes to blur", flush=True)
 
     per_frame = _expand_detections(sampled, detect_every, n_frames)
 
@@ -513,6 +526,11 @@ def process_chunk(
                 _blur_region(frame, box, method=method)
             proc.stdin.write(frame.tobytes())
             written += 1
+            if written % 2000 == 0:
+                el = time.time() - t1
+                print(f"[face_anon] {label}pass2 {written}/{n_frames} frames "
+                      f"({100.0 * written / max(n_frames, 1):.1f}%) @ "
+                      f"{written / max(el, 1e-9):.0f} fps", flush=True)
     finally:
         cap.release()
         proc.stdin.close()
