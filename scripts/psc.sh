@@ -35,7 +35,7 @@
 #   ./scripts/psc.sh status           # is the shared session alive?
 #   ./scripts/psc.sh run 'squeue -u $USER'      # LIGHT commands only
 #   ./scripts/psc.sh sync             # rsync code up VIA THE DTN
-#   ./scripts/psc.sh sbatch scripts/psc_cards.sbatch
+#   ./scripts/psc.sh sbatch scripts/psc_face_anon.sbatch
 #   ./scripts/psc.sh interact         # get a real compute node to work on
 #   ./scripts/psc.sh logout           # close the shared session
 set -uo pipefail

@@ -1,10 +1,12 @@
 #!/bin/bash
 # Facial anonymization of the lecture camera stream, on Bridges-2.
 #
-# Unlike scripts/psc_cards.sbatch, this stage genuinely needs the GPU: the cost
-# is almost entirely InsightFace ONNX inference (measured 98.9% of runtime), and
-# that runs on CUDA. It does NOT need NVENC -- the h264 encode is a rounding
-# error here and goes through libx264 on the node's CPUs.
+# This is one of only two stages that genuinely needs a GPU (the other is
+# transcription): the cost is almost entirely InsightFace ONNX inference
+# (measured 98.9% of runtime), and that runs on CUDA. It does NOT need NVENC --
+# the h264 encode is a rounding error here and goes through libx264 on the
+# node's CPUs. Every other stage is ffmpeg/CPU and belongs on RM-shared, except
+# cards, which is local-only.
 #
 # A full GPU node has 8 GPUs, so --chunks 8 pins one worker per GPU via
 # CUDA_VISIBLE_DEVICES and gives ~8x. Combined with dropping the three unused
