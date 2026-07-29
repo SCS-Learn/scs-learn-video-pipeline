@@ -166,6 +166,29 @@ video. `src/paths.py` still reads the legacy location if the new one is absent.
 
 ---
 
+## Troubleshooting: symptom → cause
+
+Look the error up here before investigating from scratch. Every row was hit for
+real during development.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `err 209 no kernel image is available for execution on the device`, `CUDNN_FE failure 11`, dies ~3s into `Conv_0` | GPU is a V100 (sm_70); `onnxruntime-gpu` 1.28's cuDNN has no sm_70 kernels | Resubmit with `--gpus=l40s-48:8` or `h100-80:8`. Never v100 for face_anon. |
+| Output video far shorter/smaller than its source (e.g. 1 MB against a 169 MB input) | Truncated or aborted encode. The stage still exits 0, so nothing notices | `python -m src.verify --lecture-dir <dir>`. Re-run the stage; do **not** let assembly consume it. |
+| HTTP 403 fetching pyannote models | Gated model. 3.1 additionally pulls PLDA files from `community-1` | Accept conditions on **both** `pyannote/speaker-diarization-3.1` and `pyannote/speaker-diarization-community-1` |
+| `refusing to assemble: ...camera_muted_anon.mp4 does not exist` | face_anon hasn't run, so faces are not anonymized | Run face_anon first. `--allow-unanonymized` only if that is genuinely intended. |
+| `refusing to run ['cards'] on PSC` | cards is local-only: 20+ min, not for PSC | Run the pipeline on a laptop, or `--skip cards` on PSC and do it locally |
+| `h264_nvenc` "listed by ffmpeg but fails to open an encode session" | GPU has no NVENC block (V100/A100/H100 have none) | Use `--encoder libx264`. There is no GPU encode path on PSC. |
+| `ffmpeg: command not found` on PSC | Not on the default PATH | `module load ffmpeg` |
+| ssh: three instant `Permission denied` with **no** `password:` prompt | No TTY, so ssh could not ask. `ssh -M -N -f` also implies `-n` | Run `ssh psc` in a real terminal. Never `-f` with password auth. |
+| ssh: password prompt appears but is rejected | PSC uses a **Kerberos** password, not CMU Andrew/SSO | Reset at <https://apr.psc.edu>, or `kpasswd` on-system (never `passwd`) |
+| `psc.sh sync`: "no session to the DTN" | Transfers may not go through a login node | `ssh psc-dtn` once, in a real terminal |
+| Inference silently runs on CPU and is ~25x slower | `onnxruntime` (CPU build) shadowing `onnxruntime-gpu` | Use the `scs-video` env. `pip uninstall onnxruntime && pip install onnxruntime-gpu` |
+| `Disk quota exceeded` mid-job | `/jet/home` is 25 GB and typically ~90% full | Work under `/ocean/projects/cis260220p/$USER/`; set `HF_HOME` there too |
+| Downstream stages use the wrong lecture's transcript | Legacy shared `data/transcription/` rather than per-lecture | Move the transcript into the lecture dir; `src/paths.py` warns when it falls back |
+| Instructor is blurred and students are clear | Wrong cluster chosen as instructor | `face_anon --preview` → inspect `face_clusters.png` → `--instructor-cluster <id>` |
+| cards takes tens of minutes and thrashes memory | Old ffmpeg `overlay` chain, O(questions × duration) | Should be cut-render-concat. Check `cards.py` has not been reverted. |
+
 ## Agent operating rules
 
 1. **Never run compute on a PSC login node.** If unsure a command is "light",
