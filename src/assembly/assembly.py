@@ -17,7 +17,7 @@ def composite_pip(
         "-filter_complex",
         f"[0:v]scale=1920:1080[main];"
         f"[1:v]scale={pip_width}:{pip_height}[pip];"
-        f"[main][pip]overlay=W-w-{margin}:H-h-{margin}[outv]",
+        f"[main][pip]overlay=W-w-{margin}:{margin}[outv]",
         "-map",
         "[outv]",
         "-map",
