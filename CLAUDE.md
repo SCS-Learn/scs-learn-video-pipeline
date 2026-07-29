@@ -191,6 +191,7 @@ real during development.
 | `psc.sh sync`: "no session to the DTN" | Transfers may not go through a login node | `ssh -N psc-dtn` once, in a real terminal; leave it running |
 | DTN: `Login denied: Only file transfers are allowed on this account` | The DTN refuses interactive shells by design | Not a failure. Use `ssh -N`, and scp/sftp/rsync over it. |
 | Inference silently runs on CPU and is ~25x slower | `onnxruntime` (CPU build) shadowing `onnxruntime-gpu` | Use the `scs-video` env. `pip uninstall onnxruntime && pip install onnxruntime-gpu` |
+| `libcublasLt.so.12: cannot open shared object file`, then silent CPU fallback | onnxruntime-gpu's CUDA libs ship as `nvidia-*` pip packages under `site-packages/nvidia/*/lib`, which the loader does not search | Add those dirs to `LD_LIBRARY_PATH` (see `scripts/psc_face_anon.sbatch`) or `module load cuda/12.6.1` |
 | `Disk quota exceeded` mid-job | `/jet/home` is 25 GB and typically ~90% full | Work under `/ocean/projects/cis260220p/$USER/`; set `HF_HOME` there too |
 | Downstream stages use the wrong lecture's transcript | Legacy shared `data/transcription/` rather than per-lecture | Move the transcript into the lecture dir; `src/paths.py` warns when it falls back |
 | Instructor is blurred and students are clear | Wrong cluster chosen as instructor | `face_anon --preview` → inspect `face_clusters.png` → `--instructor-cluster <id>` |

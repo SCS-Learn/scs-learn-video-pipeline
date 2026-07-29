@@ -67,6 +67,19 @@ source activate scs-video                # separate env from scs-learn: it has
 module load ffmpeg 2>/dev/null || true
 command -v ffmpeg >/dev/null || { echo "ERROR: no ffmpeg on PATH" >&2; exit 1; }
 
+# onnxruntime-gpu takes its CUDA dependencies as nvidia-* pip packages, which
+# install under site-packages/nvidia/*/lib -- a path the dynamic loader never
+# searches. Without this, libonnxruntime_providers_cuda.so fails to load
+# ("libcublasLt.so.12: cannot open shared object file"), onnxruntime falls back
+# to CPU *silently*, and the job runs ~25x slower while looking healthy.
+NVIDIA_LIBS=$(python -c "import glob,os,site;print(':'.join(sorted({p for d in site.getsitepackages() for p in glob.glob(os.path.join(d,'nvidia','*','lib'))})))" 2>/dev/null || true)
+if [ -n "${NVIDIA_LIBS:-}" ]; then
+    export LD_LIBRARY_PATH="$NVIDIA_LIBS:${LD_LIBRARY_PATH:-}"
+    echo "LD_LIBRARY_PATH += env-local NVIDIA libs"
+else
+    module load cuda/12.6.1 2>/dev/null && echo "loaded cuda/12.6.1 module"
+fi
+
 echo "=============================================================="
 echo "node    : $(hostname)"
 echo "cores   : ${SLURM_CPUS_ON_NODE:-?}"
