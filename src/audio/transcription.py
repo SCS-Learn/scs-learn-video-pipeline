@@ -127,10 +127,16 @@ def identify_student_questions(segments, instructor_label):
     1. Decide whether it is a STUDENT QUESTION — an actual question being asked
     to the instructor — as opposed to a comment, aside, background noise, or
     non-question remark.
-    2. If it IS a question, also provide a cleaned-up version of the text: remove
-    filler words ("um", "like"), remove any names mentioned, and phrase it as
-    a clear, concise question suitable for display on a card. If it is NOT a
-    question, return the original text unchanged.
+    2. If it IS a question, rewrite it as a SHORT question suitable for a slide.
+    Remove filler words ("um", "like"), remove any names, and state only the
+    core thing being asked.
+
+    HARD LIMIT: at most 160 characters, ideally one sentence under 100.
+    Students ramble; do not transcribe them verbatim. If a question runs on for
+    several clauses, identify what is actually being asked and write just that.
+    A 300-character card renders as an unreadable wall of text.
+
+    If it is NOT a question, return the original text unchanged.
 
     Segments:
     {json.dumps(indexed_input, indent=2)}

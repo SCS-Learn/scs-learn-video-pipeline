@@ -76,6 +76,19 @@ BLACK = (0, 0, 0)
 # concat segment shares one geometry.
 CARD_W, CARD_H = 1920, 1080
 
+# Safe text area, measured off the template rather than guessed. Its content
+# bands are: y 0-44 top border, 95-207 CMU branding, 267-326 the "Student
+# Question" heading, 1035-1079 bottom border. Text used to be laid out from
+# y=300 against a height budget of HEIGHT-400=680, which is generous enough that
+# an 8-line question passed the fit check at full size and was then centred to
+# y=312 -- on top of a heading that runs to 326. A long question visibly
+# collided with the heading in the published video.
+TEXT_TOP, TEXT_BOTTOM = 360, 1010
+
+# Above this, a card renders as a wall of small text. Measured: 3 of 4
+# questions on lecture 12 came back at 18-79 chars, one at 311.
+CARD_TEXT_BUDGET = 160
+
 
 def cpu_count():
     """Cores actually available to this process (respects a Slurm cpuset)."""
@@ -227,6 +240,7 @@ def render_card(
     WRAP_WIDTH = 42
 
     font_size = MAX_FONT_SIZE
+    avail_h = TEXT_BOTTOM - TEXT_TOP
     while font_size >= MIN_FONT_SIZE:
         font = ImageFont.truetype(font_path, font_size)
         wrapped = textwrap.fill(question_text, width=WRAP_WIDTH)
@@ -234,17 +248,24 @@ def render_card(
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
 
-        if text_w <= WIDTH - 200 and text_h <= HEIGHT - 400:
+        if text_w <= WIDTH - 200 and text_h <= avail_h:
             break
         font_size -= 4
 
-    x = (WIDTH - text_w) / 2
-    y = 300 + (HEIGHT - 400 - text_h) / 2
+    # bbox[1] is the ascender offset, not zero; ignoring it shifted every card
+    # down by ~18px and pushed long text past the safe area.
+    x = (WIDTH - text_w) / 2 - bbox[0]
+    y = TEXT_TOP + (avail_h - text_h) / 2 - bbox[1]
 
     draw.multiline_text(
         (x, y), wrapped, font=font, fill=BLACK, spacing=18, align="center"
     )
 
+    if len(question_text) > CARD_TEXT_BUDGET:
+        print(f"[cards] WARNING card text is {len(question_text)} chars "
+              f"(> {CARD_TEXT_BUDGET}); it will render small and dense. The "
+              f"transcription step is meant to condense questions -- check "
+              f"identify_student_questions() output.", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     img.save(out_path)
     return out_path
