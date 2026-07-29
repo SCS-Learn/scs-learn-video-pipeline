@@ -456,6 +456,20 @@ def _expand_detections(sampled, detect_every, n_frames, linger=2):
     return per_frame
 
 
+def _decide_instructor(sims, sim_threshold):
+    """Median of the samples collected so far, so a single bad frame cannot
+    decide a whole track either way.
+
+    Fail-closed on no samples. Median rather than max because max would give a
+    student one lucky frame's chance to pass as the instructor, while median
+    requires a majority -- and instructor frames measure 0.65-0.87 consistently
+    against students' ~0.07, so a majority vote is decisive in both directions.
+    """
+    if not sims:
+        return False
+    return float(np.median(sims)) >= sim_threshold
+
+
 def process_chunk(
     video_path,
     out_path,
@@ -466,6 +480,7 @@ def process_chunk(
     detect_every=4,
     method="pixelate",
     sim_threshold=0.45,
+    recheck_samples=3,
     encoder="libx264",
     crf=20,
     threads=None,
@@ -505,14 +520,27 @@ def process_chunk(
                 # New face -> one recognition call. Fail-closed: no embedding
                 # means we cannot prove it is the instructor, so it gets blurred.
                 emb = embed_face(app, frame, box, kpss[j], bboxes[j][4])
-                is_instr = False
+                sims = []
                 if emb is not None and centroid is not None:
-                    protos = np.atleast_2d(centroid)
-                    is_instr = float(np.max(protos @ emb)) >= sim_threshold
-                hit = {"box": box, "last": off, "is_instructor": is_instr}
+                    sims.append(float(np.max(np.atleast_2d(centroid) @ emb)))
+                hit = {"box": box, "last": off, "sims": sims,
+                       "is_instructor": _decide_instructor(sims, sim_threshold)}
                 tracks.append(hit)
             else:
                 hit["box"], hit["last"] = box, off
+                # Re-sample identity over a track's first few detections rather
+                # than trusting the frame it was born on. A track created while
+                # the instructor was mid-stride scored 0.072 (motion-blurred
+                # face) and every later frame inherited that verdict, blurring
+                # him for 4.2s -- while those frames scored 0.65-0.84 on their
+                # own. One unlucky frame must not poison a whole track.
+                if len(hit["sims"]) < recheck_samples and centroid is not None:
+                    emb = embed_face(app, frame, box, kpss[j], bboxes[j][4])
+                    if emb is not None:
+                        hit["sims"].append(
+                            float(np.max(np.atleast_2d(centroid) @ emb)))
+                        hit["is_instructor"] = _decide_instructor(
+                            hit["sims"], sim_threshold)
             if not hit["is_instructor"]:
                 keep.append(box)
         sampled[off] = keep
@@ -672,6 +700,11 @@ def main():
                              "onnxruntime already spreads across cores, so extra "
                              "processes just add model-load and contention")
     parser.add_argument("--cluster-threshold", type=float, default=0.5)
+    parser.add_argument("--recheck-samples", type=int, default=3,
+                        help="Identity samples per track before its instructor "
+                             "verdict is fixed. 1 reproduces the old behaviour, "
+                             "where one motion-blurred birth frame poisoned a "
+                             "whole track")
     parser.add_argument("--sim-threshold", type=float, default=0.45,
                         help="Cosine similarity to the instructor centroid above "
                              "which a face is NOT blurred. Lower = more faces pass "
