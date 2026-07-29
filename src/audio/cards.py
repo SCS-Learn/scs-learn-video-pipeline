@@ -174,6 +174,14 @@ def cuda_decode_available():
 # ---------------------------------------------------------------------------
 # Probing the source
 # ---------------------------------------------------------------------------
+def _has_audio(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+        capture_output=True, text=True).stdout
+    return "audio" in out
+
+
 def probe_video(path):
     out = subprocess.run(
         [
@@ -430,11 +438,30 @@ def burn_question_cards(
             for s in seg_paths:
                 f.write(f"file '{os.path.abspath(s)}'\n")
 
+        # Segments are encoded video-only so the concat demuxer sees uniform
+        # streams. If the SOURCE carries audio, mux it back afterwards: that is
+        # the case when cards are burned into the camera rather than the screen
+        # (screen.mp4 has no audio track, the camera has the muted one), and
+        # silently dropping it would produce a mute deliverable.
+        src_has_audio = _has_audio(screen_path)
+        concat_target = (os.path.join(work_dir, "concat_out.mp4")
+                         if src_has_audio else out_path)
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-             "-i", list_path, "-c", "copy", "-movflags", "+faststart", out_path],
+             "-i", list_path, "-c", "copy", "-movflags", "+faststart",
+             concat_target],
             check=True,
         )
+        if src_has_audio:
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-i", concat_target, "-i", screen_path,
+                 "-map", "0:v", "-map", "1:a",
+                 "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
+                 "-movflags", "+faststart", out_path],
+                check=True,
+            )
+            print("[cards] carried the source audio track through")
     finally:
         if owns_work_dir and not keep_work:
             shutil.rmtree(work_dir, ignore_errors=True)
