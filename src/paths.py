@@ -105,6 +105,12 @@ class LecturePaths:
     def final(self):
         return self._p(f"{self.key}.mp4")
 
+    @property
+    def final_camera_only(self):
+        """Camera-only deliverable: everything the pipeline does to the camera
+        (student audio muted, faces anonymized) with no screen composited in."""
+        return self._p(f"{self.key}-camera.mp4")
+
     # --- legacy fallbacks -------------------------------------------------
     def _resolve_legacy(self, preferred, legacy_name):
         if os.path.exists(preferred):

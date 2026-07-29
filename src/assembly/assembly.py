@@ -39,10 +39,34 @@ def composite_pip(
     return out_path
 
 
+def camera_only(camera_path, out_path, duration, width=1920, height=1080,
+                crf=18):
+    """Camera-only deliverable -- no screen composited in.
+
+    Same anonymized camera and muted audio as the PiP version, scaled to the
+    main deliverable's frame size so the two sit side by side. Upscaling 720p
+    adds no detail; it only makes the frame sizes match.
+    """
+    cmd = [
+        "ffmpeg", "-y", "-i", camera_path,
+        "-vf", f"scale={width}:{height}:flags=lanczos,setsar=1",
+        "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart", "-t", str(duration), out_path,
+    ]
+    subprocess.run(cmd, check=True)
+    return out_path
+
+
 def main():
     parser = lecture_parser("Composite the final picture-in-picture video.")
     parser.add_argument("--allow-unanonymized", action="store_true",
                         help="Proceed even if no face-anonymized camera exists")
+    parser.add_argument("--camera-only", action="store_true",
+                        help="Also write <key>-camera.mp4: the anonymized camera "
+                             "with muted audio and NO screen composited in")
+    parser.add_argument("--skip-pip", action="store_true",
+                        help="Write only the camera-only file, not the PiP one")
     args = parser.parse_args()
     p = LecturePaths(args.lecture_dir)
 
@@ -60,13 +84,19 @@ def main():
     print(f"[assembly] camera={camera}")
 
     d = get_duration(camera)
-    out = composite_pip(
-        screen_path=p.screen_with_cards,
-        camera_path=camera,
-        out_path=p.final,
-        duration=d,
-    )
-    print(f"[assembly] wrote {out}")
+
+    if not args.skip_pip:
+        out = composite_pip(
+            screen_path=p.screen_with_cards,
+            camera_path=camera,
+            out_path=p.final,
+            duration=d,
+        )
+        print(f"[assembly] wrote {out}")
+
+    if args.camera_only or args.skip_pip:
+        out2 = camera_only(camera, p.final_camera_only, d)
+        print(f"[assembly] wrote {out2} (camera only, no screen)")
 
 
 if __name__ == "__main__":

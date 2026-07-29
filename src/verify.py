@@ -158,7 +158,11 @@ def _stage_checks(stage, p):
         return [("captions.srt", p.captions, None, {})]
     if stage == "assembly":
         ref = p.camera_anon if os.path.exists(p.camera_anon) else p.camera_muted
-        return [("final video", p.final, ref, {"expect_audio": True})]
+        checks = [("final video", p.final, ref, {"expect_audio": True})]
+        if os.path.exists(p.final_camera_only):
+            checks.append(("camera-only video", p.final_camera_only, ref,
+                           {"expect_audio": True}))
+        return checks
     return []
 
 
