@@ -72,7 +72,8 @@ def probe(path):
 
 
 def check_media(path, ref_path=None, tol_s=2.0, min_bytes=100_000,
-                expect_audio=None, label=""):
+                expect_audio=None, label="", size_ratio=(0.08, 8.0),
+                min_bytes_per_s=2_000):
     """Return a list of human-readable problems. Empty list means healthy."""
     tag = label or os.path.basename(path)
     if not os.path.exists(path):
@@ -95,19 +96,43 @@ def check_media(path, ref_path=None, tol_s=2.0, min_bytes=100_000,
         problems.append(f"{tag}: no audio stream, but this stage should carry "
                         f"audio through")
 
+    # Bytes-per-second needs no reference and catches the case duration checks
+    # miss: a file of the right length that is nonetheless empty (all-black
+    # frames, a stalled encode padded out, a failed filter graph).
+    if info["duration"] > 1.0:
+        bps = info["size"] / info["duration"]
+        if bps < min_bytes_per_s:
+            problems.append(
+                f"{tag}: {bps / 1000:.1f} kB/s over {info['duration']:.0f}s -- far "
+                f"too little data for video at this duration; likely blank or a "
+                f"stalled encode")
+
     if ref_path:
         ref = probe(ref_path)
         if ref is None:
             problems.append(f"{tag}: cannot probe reference {ref_path}")
-        elif ref["duration"] > 0:
-            drift = info["duration"] - ref["duration"]
-            if abs(drift) > tol_s:
-                pct = 100.0 * info["duration"] / ref["duration"]
-                problems.append(
-                    f"{tag}: duration {info['duration']:.1f}s vs "
-                    f"{os.path.basename(ref_path)} {ref['duration']:.1f}s "
-                    f"({pct:.1f}% of source, off by {drift:+.1f}s). This is what "
-                    f"a truncated encode looks like.")
+        else:
+            if ref["duration"] > 0:
+                drift = info["duration"] - ref["duration"]
+                if abs(drift) > tol_s:
+                    pct = 100.0 * info["duration"] / ref["duration"]
+                    problems.append(
+                        f"{tag}: duration {info['duration']:.1f}s vs "
+                        f"{os.path.basename(ref_path)} {ref['duration']:.1f}s "
+                        f"({pct:.1f}% of source, off by {drift:+.1f}s). This is "
+                        f"what a truncated encode looks like.")
+            # Size relative to the source, as an independent signal from
+            # duration. Bounds are deliberately wide: screen_with_cards is
+            # legitimately 3.3x its source (crf 18 over a 246 kb/s screen
+            # recording), while the real failure was 0.006x.
+            if ref["size"] > 0 and size_ratio:
+                r = info["size"] / ref["size"]
+                lo, hi = size_ratio
+                if not (lo <= r <= hi):
+                    problems.append(
+                        f"{tag}: {info['size'] / 1e6:.1f} MB is {r:.3f}x "
+                        f"{os.path.basename(ref_path)} ({ref['size'] / 1e6:.1f} MB) "
+                        f"-- outside the plausible {lo}-{hi}x range")
     return problems
 
 

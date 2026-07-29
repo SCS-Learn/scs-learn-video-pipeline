@@ -691,6 +691,9 @@ def main():
     parser.add_argument("--benchmark", action="store_true",
                         help="Measure inference throughput on this machine and exit")
     parser.add_argument("--keep-work", action="store_true")
+    parser.add_argument("--overwrite-partial", action="store_true",
+                        help="Allow a windowed run (--start/--end/--max-frames) "
+                             "to overwrite a longer existing output")
     # internal: one chunk worker, spawned by the parent with a pinned GPU
     parser.add_argument("--worker-chunk", type=int, default=None,
                         help=argparse.SUPPRESS)
@@ -754,6 +757,27 @@ def main():
 
     print(f"[face_anon] {video_path}: {meta['width']}x{meta['height']} @ {fps:g}fps, "
           f"frames {start_frame}..{end_frame} ({total})")
+    input_base = os.path.splitext(os.path.basename(input_name))[0]
+    out_path = os.path.join(args.lecture_dir, f"{input_base}_anon.mp4")
+
+    # Refuse to replace a full-lecture output with the result of a windowed test
+    # run. A --max-frames benchmark writing into a real lecture directory
+    # silently replaced a finished 359.9 MB / 4772.9s anonymized camera with a
+    # 24-second clip; every downstream stage would then have built a 24-second
+    # "lecture". Partial runs must be explicit about destroying a full one.
+    partial = total < meta["n_frames"]
+    if partial and os.path.exists(out_path) and not args.overwrite_partial:
+        existing = probe(out_path)
+        if existing["n_frames"] > total * 2:
+            raise SystemExit(
+                f"refusing to overwrite {out_path}\n"
+                f"  it holds {existing['n_frames']} frames "
+                f"({existing['n_frames'] / max(fps, 1):.0f}s) but this run covers "
+                f"only {total} frames ({total / max(fps, 1):.0f}s).\n"
+                f"  Writing a windowed result over a full-lecture output would "
+                f"silently shorten everything downstream.\n"
+                f"  Pass --overwrite-partial if that is genuinely intended, or "
+                f"--input/--lecture-dir pointing somewhere scratch.")
 
     # ---- Stage A: instructor identity from a sample
     app = build_app(det_size=args.det_size, need_recognition=True)
@@ -793,8 +817,6 @@ def main():
         print("[face_anon] WARNING no face embeddings found in the sample; "
               "every detected face will be blurred (fail-closed)")
 
-    input_base = os.path.splitext(os.path.basename(input_name))[0]
-    out_path = os.path.join(args.lecture_dir, f"{input_base}_anon.mp4")
     work_dir = tempfile.mkdtemp(prefix="faceanon-", dir=args.lecture_dir)
 
     try:
