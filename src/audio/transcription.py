@@ -8,13 +8,16 @@ from dotenv import load_dotenv
 import json
 import anthropic
 
+from src.paths import LecturePaths, lecture_parser
 
-def convert_mp4_to_wav():
+
+def convert_mp4_to_wav(video_path, wav_path):
+    os.makedirs(os.path.dirname(os.path.abspath(wav_path)), exist_ok=True)
     command = [
         "ffmpeg",
         "-y",
         "-i",
-        "data/15210-lecture12/camera.mp4",
+        video_path,
         "-vn",
         "-acodec",
         "pcm_s16le",
@@ -22,7 +25,7 @@ def convert_mp4_to_wav():
         "16000",
         "-ac",
         "1",
-        "data/15210-lecture12/camera.wav",
+        wav_path,
     ]
 
     try:
@@ -33,20 +36,22 @@ def convert_mp4_to_wav():
         print(f"Error during conversion: {e.stderr.decode()}")
 
 
-def generate_transcript():
+def generate_transcript(audio_file, out_json, device=None, batch_size=16):
     load_dotenv()
 
-    device = "cuda"
-    audio_file = "data/15210-lecture12/camera.wav"
-    batch_size = 16
-    compute_type = "float16"
+    # CPU has no float16 path in ctranslate2; fall back so a local smoke test
+    # does not need a GPU.
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    compute_type = "float16" if device == "cuda" else "int8"
+    print(f"[transcription] device={device} compute_type={compute_type}")
 
     model = whisperx.load_model("large-v2", device, compute_type=compute_type)
     audio = whisperx.load_audio(audio_file)
     result = model.transcribe(audio, batch_size=batch_size)
 
     gc.collect()
-    torch.cuda.empty_cache()
+    if device == "cuda":
+        torch.cuda.empty_cache()
     del model
 
     model_a, metadata = whisperx.load_align_model(
@@ -62,16 +67,25 @@ def generate_transcript():
     )
 
     gc.collect()
-    torch.cuda.empty_cache()
+    if device == "cuda":
+        torch.cuda.empty_cache()
     del model_a
 
-    diarize_model = DiarizationPipeline(token=os.getenv("HF_TOKEN"), device=device)
+    # whisperx defaults to the gated pyannote/speaker-diarization-community-1;
+    # pin to speaker-diarization-3.1 (accept its gate + the PLDA files it pulls
+    # from community-1 on the HF model pages) to avoid a 403.
+    diarize_model = DiarizationPipeline(
+        model_name="pyannote/speaker-diarization-3.1",
+        token=os.getenv("HF_TOKEN"),
+        device=device,
+    )
     diarize_segments = diarize_model(audio)
 
     result = whisperx.assign_word_speakers(diarize_segments, result)
-    os.makedirs("data/transcription", exist_ok=True)
-    with open("data/transcription/transcript.json", "w") as f:
+    os.makedirs(os.path.dirname(os.path.abspath(out_json)), exist_ok=True)
+    with open(out_json, "w") as f:
         json.dump(result["segments"], f, indent=2)
+    return out_json
 
 
 def get_instructor_label(segments):
@@ -162,17 +176,28 @@ def identify_student_questions(segments, instructor_label):
 
 
 def main():
-    convert_mp4_to_wav()
-    generate_transcript()
+    parser = lecture_parser("Transcribe + diarize + classify student questions.")
+    parser.add_argument("--device", default=None, choices=["cuda", "cpu"])
+    parser.add_argument("--batch-size", type=int, default=16)
+    args = parser.parse_args()
+    p = LecturePaths(args.lecture_dir)
 
-    with open("data/transcription/transcript.json") as f:
+    convert_mp4_to_wav(p.camera, p.camera_wav)
+    generate_transcript(p.camera_wav, p.transcript,
+                        device=args.device, batch_size=args.batch_size)
+
+    with open(p.transcript) as f:
         segments = json.load(f)
 
     instructor_label = get_instructor_label(segments)
+    print(f"[transcription] instructor speaker label: {instructor_label}")
 
     classified_segments = identify_student_questions(segments, instructor_label)
-    with open("data/transcription/transcript_classified.json", "w") as f:
+    with open(p.transcript_classified, "w") as f:
         json.dump(classified_segments, f, indent=2)
+    n_q = sum(1 for s in classified_segments if s.get("is_student_question"))
+    print(f"[transcription] wrote {p.transcript_classified} "
+          f"({len(classified_segments)} segments, {n_q} student questions)")
 
 
 if __name__ == "__main__":
