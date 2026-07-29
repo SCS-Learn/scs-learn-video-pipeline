@@ -133,22 +133,37 @@ def build_app(det_size=640, need_recognition=True, quiet=True):
     if quiet:
         onnxruntime.set_default_logger_severity(3)
 
-    providers = onnxruntime.get_available_providers()
-    use_cuda = "CUDAExecutionProvider" in providers
     modules = ["detection", "recognition"] if need_recognition else ["detection"]
-    app = FaceAnalysis(
-        name="buffalo_l",
-        allowed_modules=modules,
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
-        if use_cuda
-        else ["CPUExecutionProvider"],
-    )
-    app.prepare(ctx_id=0 if use_cuda else -1, det_size=(det_size, det_size))
-    print(
-        f"[face_anon] detector ready (device={'cuda' if use_cuda else 'cpu'}, "
-        f"det_size={det_size}, modules={'+'.join(modules)})",
-        flush=True,
-    )
+
+    # get_available_providers() reports what the BUILD supports, not what
+    # actually loads. On a PSC H100 node it listed CUDAExecutionProvider while
+    # libonnxruntime_providers_cuda.so failed to load for want of
+    # libcublasLt.so.12; onnxruntime then fell back to CPU silently and this
+    # function still printed "device=cuda". A ~25x slowdown that reports itself
+    # as the fast path is worse than an outright failure, so ask the session
+    # which providers it really ended up with.
+    want_cuda = "CUDAExecutionProvider" in onnxruntime.get_available_providers()
+    providers = (["CUDAExecutionProvider", "CPUExecutionProvider"] if want_cuda
+                 else ["CPUExecutionProvider"])
+    app = FaceAnalysis(name="buffalo_l", allowed_modules=modules,
+                       providers=providers)
+    app.prepare(ctx_id=0 if want_cuda else -1, det_size=(det_size, det_size))
+
+    actual = []
+    for m in app.models.values():
+        sess = getattr(m, "session", None)
+        if sess is not None:
+            actual += list(sess.get_providers())
+    on_cuda = "CUDAExecutionProvider" in actual
+    device = "cuda" if on_cuda else "cpu"
+    print(f"[face_anon] detector ready (device={device}, det_size={det_size}, "
+          f"modules={'+'.join(modules)})", flush=True)
+    if want_cuda and not on_cuda:
+        print("[face_anon] WARNING: CUDA was requested and is listed by this "
+              "onnxruntime build, but the session is running on CPU -- the CUDA "
+              "provider failed to load. Expect ~25x slower. Check the log above "
+              "for a missing library (e.g. libcublasLt.so.12 needs a CUDA "
+              "module loaded, or `pip install nvidia-cublas-cu12`).", flush=True)
     return app
 
 
