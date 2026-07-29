@@ -47,8 +47,11 @@
 
 set -euo pipefail
 
-PROJECT="${PROJECT:-/ocean/projects/cis260220p/$USER}"
-REPO="${REPO:-$PROJECT/scs-learn-video-pipeline}"
+# Derive the repo from where sbatch was invoked rather than hardcoding a path.
+# A hardcoded /ocean default disagreed with the repo's actual location under
+# /jet/home, so the job died in 15s on `cd`. SLURM_SUBMIT_DIR cannot drift out
+# of sync the way a second copy of the path can.
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
 LECTURE_DIR="${LECTURE_DIR:-data/15210-lecture12}"
 STREAM_INPUT="${STREAM_INPUT:-camera_muted.mp4}"   # run after audio.py so the
                                                   # muted audio is carried over
