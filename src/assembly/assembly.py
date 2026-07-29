@@ -1,4 +1,5 @@
 import subprocess
+from src.paths import LecturePaths, lecture_parser
 from src.sync import get_duration
 
 
@@ -39,13 +40,33 @@ def composite_pip(
 
 
 def main():
-    d = get_duration("data/15210-lecture12/camera_muted.mp4")
-    composite_pip(
-        screen_path="data/15210-lecture12/screen_with_cards.mp4",
-        camera_path="data/15210-lecture12/camera_muted.mp4",
-        out_path="data/15210-lecture12/15210-lecture12.mp4",
+    parser = lecture_parser("Composite the final picture-in-picture video.")
+    parser.add_argument("--allow-unanonymized", action="store_true",
+                        help="Proceed even if no face-anonymized camera exists")
+    args = parser.parse_args()
+    p = LecturePaths(args.lecture_dir)
+
+    # Prefer the face-anonymized camera. This used to hardcode camera_muted.mp4,
+    # which silently discarded a completed anonymization pass and published a
+    # video still showing every student's face.
+    camera = p.resolve_camera_for_assembly()
+    if camera == p.camera_muted and not args.allow_unanonymized:
+        raise SystemExit(
+            f"refusing to assemble: {p.camera_anon} does not exist, so faces "
+            f"are NOT anonymized.\n"
+            f"Run:  python -m src.video.face_anon --lecture-dir {p.dir} "
+            f"--input camera_muted.mp4\n"
+            f"or pass --allow-unanonymized if that is genuinely intended.")
+    print(f"[assembly] camera={camera}")
+
+    d = get_duration(camera)
+    out = composite_pip(
+        screen_path=p.screen_with_cards,
+        camera_path=camera,
+        out_path=p.final,
         duration=d,
     )
+    print(f"[assembly] wrote {out}")
 
 
 if __name__ == "__main__":
