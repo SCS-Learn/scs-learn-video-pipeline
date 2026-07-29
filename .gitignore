@@ -1,2 +1,10 @@
 .env
+.env.bak*
 data/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+manifest*.json
+logs/
+*.log
