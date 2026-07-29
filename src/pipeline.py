@@ -24,6 +24,7 @@ import sys
 import time
 
 from src.paths import LecturePaths
+from src.verify import VerificationError, verify_stage
 
 # name, module, where it runs, note
 STAGES = [
@@ -71,6 +72,10 @@ def main():
                         help="Print the commands without running them")
     parser.add_argument("--force", action="store_true",
                         help="Run local_only stages even on PSC")
+    parser.add_argument("--no-verify", action="store_true",
+                        help="Skip the output check after each stage. A stage "
+                             "can exit 0 having written a truncated file, so "
+                             "this is on by default.")
     args = parser.parse_args()
 
     if not os.path.isdir(args.lecture_dir):
@@ -117,6 +122,14 @@ def main():
                 print("[pipeline] WARNING: face_anon cannot run on V100 (sm_70 "
                       "unsupported by onnxruntime-gpu). Use l40s-48 or h100-80.")
         total += run_stage(name, module, args.lecture_dir, extra, args.dry_run)
+        if not args.dry_run and not args.no_verify:
+            try:
+                verify_stage(name, p)
+            except VerificationError as e:
+                raise SystemExit(
+                    f"\n{e}\n\n[pipeline] stopping after '{name}'. Later "
+                    f"stages would consume this output and produce a broken "
+                    f"result, which is worse than failing here.")
 
     if not args.dry_run:
         print(f"\n[pipeline] all stages done in {total / 60:.1f} min")
