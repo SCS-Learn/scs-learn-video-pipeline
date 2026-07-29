@@ -4,6 +4,8 @@ import anthropic
 import os
 from dotenv import load_dotenv
 
+from src.paths import LecturePaths, lecture_parser
+
 
 def polish_captions(segments):
     load_dotenv()
@@ -75,6 +77,7 @@ def seconds_to_subriptime(seconds):
 
 
 def generate_captions(segments, output_path="captions.srt"):
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     subs = pysrt.SubRipFile()
 
     index = 1
@@ -97,11 +100,23 @@ def generate_captions(segments, output_path="captions.srt"):
 
 
 def main():
-    with open("data/transcription/transcript_classified.json") as f:
+    parser = lecture_parser("Write an .srt from the classified transcript.")
+    parser.add_argument("--polish", action="store_true",
+                        help="Also run the Claude ASR-mishear correction pass "
+                             "(off by default: it rewrites caption text, so "
+                             "review the diff before publishing)")
+    args = parser.parse_args()
+    p = LecturePaths(args.lecture_dir)
+
+    with open(p.resolve_transcript_classified()) as f:
         segments = json.load(f)
 
-    # polished_segments = polish_captions(segments)
-    generate_captions(segments, output_path="data/transcription/captions.srt")
+    if args.polish:
+        print("[captions] polishing ASR mishears via Claude ...")
+        segments = polish_captions(segments)
+
+    subs = generate_captions(segments, output_path=p.captions)
+    print(f"[captions] wrote {p.captions} ({len(subs)} cues)")
 
 
 if __name__ == "__main__":

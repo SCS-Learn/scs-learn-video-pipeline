@@ -1,5 +1,7 @@
 import subprocess
 
+from src.paths import LecturePaths, lecture_parser
+
 
 def get_duration(path):
     result = subprocess.run(
@@ -46,11 +48,14 @@ def align_screen_to_camera(camera_path, screen_path, out_screen_path, min_offset
 
 
 def main():
-    align_screen_to_camera(
-        camera_path="data/15210-lecture12/camera.mp4",
-        screen_path="data/15210-lecture12/screen.mp4",
-        out_screen_path="data/15210-lecture12/screen_sync.mp4",
+    args = lecture_parser("Trim the screen recording to align with the camera.").parse_args()
+    p = LecturePaths(args.lecture_dir)
+    out = align_screen_to_camera(
+        camera_path=p.camera,
+        screen_path=p.screen,
+        out_screen_path=p.screen_sync,
     )
+    print(f"[sync] screen aligned -> {out}")
 
 
 if __name__ == "__main__":

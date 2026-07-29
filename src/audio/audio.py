@@ -3,6 +3,7 @@ import numpy as np
 import soundfile as sf
 import json
 from src.audio.transcription import get_instructor_label
+from src.paths import LecturePaths, lecture_parser
 
 
 def merge_speaker_spans(segments, instructor_label, gap_tolerance=1.5):
@@ -113,23 +114,31 @@ def put_audio_into_video(video_path, wav_path, out_video_path):
 
 
 def main():
-    with open("data/transcription/transcript_classified.json") as f:
+    args = lecture_parser("Mute every non-instructor span in the camera audio.").parse_args()
+    p = LecturePaths(args.lecture_dir)
+
+    transcript = p.resolve_transcript_classified()
+    with open(transcript) as f:
         segments = json.load(f)
 
     instructor_label = get_instructor_label(segments)
     intervals = merge_speaker_spans(segments, instructor_label)
+    muted_s = sum(iv["end"] - iv["start"] for iv in intervals)
+    print(f"[audio] instructor={instructor_label}, muting {len(intervals)} spans "
+          f"({muted_s:.1f}s of non-instructor audio)")
 
     mute_student_audio(
-        wav_path="data/15210-lecture12/camera.wav",
+        wav_path=p.camera_wav,
         intervals=intervals,
-        out_wav_path="data/15210-lecture12/camera_muted.wav",
+        out_wav_path=p.camera_muted_wav,
     )
 
-    put_audio_into_video(
-        video_path="data/15210-lecture12/camera.mp4",
-        wav_path="data/15210-lecture12/camera_muted.wav",
-        out_video_path="data/15210-lecture12/camera_muted.mp4",
+    out = put_audio_into_video(
+        video_path=p.camera,
+        wav_path=p.camera_muted_wav,
+        out_video_path=p.camera_muted,
     )
+    print(f"[audio] wrote {out}")
 
 
 if __name__ == "__main__":
