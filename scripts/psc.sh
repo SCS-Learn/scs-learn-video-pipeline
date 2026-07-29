@@ -227,9 +227,13 @@ master socket is still created, so scp/sftp/rsync work over it -- but an
 interactive login will always look like it failed."
     fi
     echo "rsync -> $PSC_DTN_ALIAS:$PSC_REMOTE_REPO  (via DTN, not a login node)"
+    # macOS ships openrsync / rsync 2.6.9, which has no --info=; -v --stats works
+    # on both that and modern rsync 3.x.
+    local vflag="-v --stats"
+    rsync --info=stats1 --version >/dev/null 2>&1 && vflag="--info=stats1,progress2"
     # Code and scripts only. Never the lecture media (hundreds of MB), never
     # .env, never the venv.
-    rsync -az --info=stats1,progress2 \
+    rsync -az $vflag \
         -e "ssh -o BatchMode=yes" \
         --exclude '.git/' --exclude '.venv/' --exclude 'data/' \
         --exclude '.env' --exclude '__pycache__/' --exclude '*.pyc' \
