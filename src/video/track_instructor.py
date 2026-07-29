@@ -278,7 +278,12 @@ def main():
     p.add_argument("--preview", action="store_true",
                    help="Write track_preview.png with the crop box drawn, exit")
     p.add_argument("--save-path", default=None,
-                   help="Also dump the crop path as JSON for inspection")
+                   help="Dump raw detections + crop path as JSON, so a later "
+                        "--zoom change can reuse them via --from-path")
+    p.add_argument("--from-path", default=None,
+                   help="Reuse detections from a --save-path JSON instead of "
+                        "re-detecting. Changing --zoom or --smooth-seconds then "
+                        "costs only the render pass")
     args = p.parse_args()
 
     try:
@@ -312,15 +317,24 @@ def main():
     print(f"[track] {video}: {meta['width']}x{meta['height']} @ {fps:g}fps, "
           f"{n_frames} frames")
 
-    app = build_app(det_size=args.det_size, need_recognition=True)
-    protos, clusters, info = identify_instructor(
-        video, app, sample_frames=args.sample_frames,
-        start_frame=0, end_frame=meta["n_frames"])
-    print(f"[track] identity: {info}")
+    if args.from_path:
+        with open(args.from_path) as f:
+            saved = json.load(f)
+        d = saved["detections"]
+        fr = np.array(d["frames"]); xs = np.array(d["cx"]); ys = np.array(d["cy"])
+        n_frames = min(n_frames, int(saved["n_frames"]))
+        print(f"[track] reusing {len(fr)} saved detections from "
+              f"{args.from_path} -- skipping the detection pass")
+    else:
+        app = build_app(det_size=args.det_size, need_recognition=True)
+        protos, clusters, info = identify_instructor(
+            video, app, sample_frames=args.sample_frames,
+            start_frame=0, end_frame=meta["n_frames"])
+        print(f"[track] identity: {info}")
 
-    fr, xs, ys, sizes, n_frames = locate_instructor(
-        video, app, protos, 0, n_frames,
-        detect_every=args.detect_every, sim_threshold=args.sim_threshold)
+        fr, xs, ys, sizes, n_frames = locate_instructor(
+            video, app, protos, 0, n_frames,
+            detect_every=args.detect_every, sim_threshold=args.sim_threshold)
     hit_rate = 100.0 * len(fr) / max(1, n_frames / args.detect_every)
     print(f"[track] instructor located in {hit_rate:.1f}% of sampled frames"
           + ("" if hit_rate > 40 else "  <-- low; check --sim-threshold"))
@@ -334,10 +348,18 @@ def main():
           f"{meta['width'] / cw:.2f}x zoom), mean pan {pan:.2f} px/frame")
 
     if args.save_path:
+        # Save the RAW detections, not just the derived crop. Detection is the
+        # entire cost of this stage (16 min for a 79-minute lecture); the crop is
+        # cheap arithmetic on top. Keeping the detections means changing --zoom or
+        # --smooth-seconds later is a re-render, not a re-detect.
         with open(args.save_path, "w") as f:
-            json.dump({"crop_w": cw, "crop_h": ch, "fps": fps,
-                       "x": x.tolist(), "y": y.tolist()}, f)
-        print(f"[track] crop path -> {args.save_path}")
+            json.dump({"detections": {"frames": fr.tolist(), "cx": xs.tolist(),
+                                      "cy": ys.tolist()},
+                       "n_frames": int(n_frames), "fps": fps,
+                       "width": meta["width"], "height": meta["height"],
+                       "crop": {"w": cw, "h": ch,
+                                "x": x.tolist(), "y": y.tolist()}}, f)
+        print(f"[track] detections + crop path -> {args.save_path}")
 
     if args.preview:
         png = save_preview(video, x, y, cw, ch,
