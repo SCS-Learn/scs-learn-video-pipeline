@@ -30,10 +30,16 @@ before an agent can do anything there.** No credential is stored anywhere.
 
 ```bash
 ./scripts/psc.sh install-config   # writes the ~/.ssh/config stanzas, once
-ssh psc                           # log in, then `exit`  -- REAL terminal needed
-ssh psc-dtn                       # again, for file transfers
+ssh psc                           # log in, then `exit`   -- REAL terminal needed
+ssh -N psc-dtn                    # for transfers; leave it running (see below)
 ./scripts/psc.sh status           # confirm
 ```
+
+The DTN needs `-N` (request no remote command). It **refuses interactive
+shells** — a plain `ssh psc-dtn` ends in `Login denied: Only file transfers are
+allowed on this account`, which looks like a failure but is expected.
+Authentication still succeeds and the master socket is still created, so
+scp/sftp/rsync work either way.
 
 Both sessions persist ~8h via SSH multiplexing; later commands reuse them with
 no password. **These two `ssh` commands must be run by a human in a real
@@ -182,7 +188,8 @@ real during development.
 | `ffmpeg: command not found` on PSC | Not on the default PATH | `module load ffmpeg` |
 | ssh: three instant `Permission denied` with **no** `password:` prompt | No TTY, so ssh could not ask. `ssh -M -N -f` also implies `-n` | Run `ssh psc` in a real terminal. Never `-f` with password auth. |
 | ssh: password prompt appears but is rejected | PSC uses a **Kerberos** password, not CMU Andrew/SSO | Reset at <https://apr.psc.edu>, or `kpasswd` on-system (never `passwd`) |
-| `psc.sh sync`: "no session to the DTN" | Transfers may not go through a login node | `ssh psc-dtn` once, in a real terminal |
+| `psc.sh sync`: "no session to the DTN" | Transfers may not go through a login node | `ssh -N psc-dtn` once, in a real terminal; leave it running |
+| DTN: `Login denied: Only file transfers are allowed on this account` | The DTN refuses interactive shells by design | Not a failure. Use `ssh -N`, and scp/sftp/rsync over it. |
 | Inference silently runs on CPU and is ~25x slower | `onnxruntime` (CPU build) shadowing `onnxruntime-gpu` | Use the `scs-video` env. `pip uninstall onnxruntime && pip install onnxruntime-gpu` |
 | `Disk quota exceeded` mid-job | `/jet/home` is 25 GB and typically ~90% full | Work under `/ocean/projects/cis260220p/$USER/`; set `HF_HOME` there too |
 | Downstream stages use the wrong lecture's transcript | Legacy shared `data/transcription/` rather than per-lecture | Move the transcript into the lecture dir; `src/paths.py` warns when it falls back |

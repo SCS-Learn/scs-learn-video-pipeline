@@ -32,6 +32,7 @@
 #   ./scripts/psc.sh install-config   # write the ~/.ssh/config stanzas (once)
 #   ./scripts/psc.sh probe            # reachability, no auth needed
 #   ./scripts/psc.sh login            # interactive: password, once
+#   ssh -N psc-dtn                    # transfers: separate connection, no shell
 #   ./scripts/psc.sh status           # is the shared session alive?
 #   ./scripts/psc.sh run 'squeue -u $USER'      # LIGHT commands only
 #   ./scripts/psc.sh sync             # rsync code up VIA THE DTN
@@ -211,12 +212,19 @@ cmd_sync() {
     # nodes." Everything here goes over the Data Transfer Node instead.
     if ! ssh -O check "$PSC_DTN_ALIAS" >/dev/null 2>&1; then
         die "no session to the DTN ($PSC_DTN_HOST).
-Transfers must not go through a login node, so this needs its own login. Run
-this once in a real terminal:
+Transfers must not go through a login node, so the DTN needs its own connection.
+Run this once in a real terminal:
 
-    ssh $PSC_DTN_ALIAS
+    ssh -N $PSC_DTN_ALIAS
 
-then retry. (Same password; the socket persists ~8h like the login one.)"
+Enter your password; it will then sit there with no prompt -- that is correct,
+-N requests no remote command. Background it (ctrl-Z then bg) or open another
+tab, and leave it up. The socket persists ~8h.
+
+Do NOT expect a shell: the DTN refuses one with 'Login denied: Only file
+transfers are allowed on this account'. Authentication still succeeds and the
+master socket is still created, so scp/sftp/rsync work over it -- but an
+interactive login will always look like it failed."
     fi
     echo "rsync -> $PSC_DTN_ALIAS:$PSC_REMOTE_REPO  (via DTN, not a login node)"
     # Code and scripts only. Never the lecture media (hundreds of MB), never
