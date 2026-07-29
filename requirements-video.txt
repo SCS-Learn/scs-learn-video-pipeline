@@ -1,0 +1,15 @@
+# Facial-anonymization stage (src/video/face_anon.py). Kept separate from the
+# main audio requirements because insightface pulls onnxruntime, which conflicts
+# with onnxruntime-gpu — use a dedicated env for the video stage.
+#
+# Local / CPU:   pip install -r requirements-video.txt
+# PSC / GPU:     pip install -r requirements-video.txt && \
+#                pip uninstall -y onnxruntime && pip install onnxruntime-gpu
+#                (insightface then auto-uses CUDAExecutionProvider)
+
+opencv-python
+insightface
+onnxruntime
+onnx
+scikit-learn
+numpy
