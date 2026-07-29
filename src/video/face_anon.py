@@ -142,12 +142,22 @@ def build_app(det_size=640, need_recognition=True, quiet=True):
     # function still printed "device=cuda". A ~25x slowdown that reports itself
     # as the fast path is worse than an outright failure, so ask the session
     # which providers it really ended up with.
-    want_cuda = "CUDAExecutionProvider" in onnxruntime.get_available_providers()
-    providers = (["CUDAExecutionProvider", "CPUExecutionProvider"] if want_cuda
-                 else ["CPUExecutionProvider"])
+    avail = onnxruntime.get_available_providers()
+    want_cuda = "CUDAExecutionProvider" in avail
+    # CoreML is a free 1.55x on Apple Silicon (measured 27.38 vs 17.63 fps
+    # detection-only) with byte-identical detections -- 64 faces found either
+    # way, so no recall is traded. It was previously never tried: the provider
+    # list went straight from CUDA to CPU.
+    want_coreml = not want_cuda and "CoreMLExecutionProvider" in avail
+    if want_cuda:
+        providers, ctx = ["CUDAExecutionProvider", "CPUExecutionProvider"], 0
+    elif want_coreml:
+        providers, ctx = ["CoreMLExecutionProvider", "CPUExecutionProvider"], 0
+    else:
+        providers, ctx = ["CPUExecutionProvider"], -1
     app = FaceAnalysis(name="buffalo_l", allowed_modules=modules,
                        providers=providers)
-    app.prepare(ctx_id=0 if want_cuda else -1, det_size=(det_size, det_size))
+    app.prepare(ctx_id=ctx, det_size=(det_size, det_size))
 
     actual = []
     for m in app.models.values():
@@ -155,7 +165,8 @@ def build_app(det_size=640, need_recognition=True, quiet=True):
         if sess is not None:
             actual += list(sess.get_providers())
     on_cuda = "CUDAExecutionProvider" in actual
-    device = "cuda" if on_cuda else "cpu"
+    on_coreml = "CoreMLExecutionProvider" in actual
+    device = "cuda" if on_cuda else ("coreml" if on_coreml else "cpu")
     print(f"[face_anon] detector ready (device={device}, det_size={det_size}, "
           f"modules={'+'.join(modules)})", flush=True)
     if want_cuda and not on_cuda:
@@ -290,18 +301,25 @@ def identify_instructor(
     # the sampled faces, which then supports a much tighter threshold.
     merged_labels = [clusters[0]["label"]]
     acc_n = clusters[0]["n"]
-    acc = clusters[0]["centroid"] * clusters[0]["n"]
+    protos = [clusters[0]["centroid"]]
     for c in clusters[1:]:
         if float(np.dot(c["centroid"], clusters[0]["centroid"])) >= merge_threshold:
             merged_labels.append(c["label"])
-            acc = acc + c["centroid"] * c["n"]
+            protos.append(c["centroid"])
             acc_n += c["n"]
-    norm = np.linalg.norm(acc)
-    instructor_centroid = (acc / norm) if norm > 0 else clusters[0]["centroid"]
+    # Keep each merged cluster as its own PROTOTYPE rather than averaging them
+    # into one centroid. Frontal and profile views of the same person are
+    # genuinely distant in embedding space, so their mean represents neither: a
+    # frontal-dominated centroid scored the instructor's profile shots below
+    # threshold and blurred him in 28.8% of frames where he was the only face.
+    # Matching against the nearest prototype fixes that without touching
+    # sim_threshold -- which must stay tight, since a measurably different
+    # person scored 0.348.
+    instructor_centroid = np.stack(protos)
     if len(merged_labels) > 1:
-        print(f"[face_anon] merged clusters {merged_labels} as one identity "
-              f"(centroid sim >= {merge_threshold}): {acc_n}/{len(E)} faces "
-              f"({acc_n / len(E):.1%})", flush=True)
+        print(f"[face_anon] instructor = clusters {merged_labels} kept as "
+              f"{len(protos)} prototypes (centroid sim >= {merge_threshold}): "
+              f"{acc_n}/{len(E)} faces ({acc_n / len(E):.1%})", flush=True)
 
     top = clusters[0]
     if top["share"] < min_cluster_share:
@@ -489,7 +507,8 @@ def process_chunk(
                 emb = embed_face(app, frame, box, kpss[j], bboxes[j][4])
                 is_instr = False
                 if emb is not None and centroid is not None:
-                    is_instr = float(np.dot(emb, centroid)) >= sim_threshold
+                    protos = np.atleast_2d(centroid)
+                    is_instr = float(np.max(protos @ emb)) >= sim_threshold
                 hit = {"box": box, "last": off, "is_instructor": is_instr}
                 tracks.append(hit)
             else:
@@ -647,8 +666,11 @@ def main():
                         help="Sample identity over the whole video (default) or "
                              "only the --start/--end window")
     parser.add_argument("--chunks", type=int, default=1,
-                        help="Split into N independent workers (one per GPU on a "
-                             "multi-GPU node)")
+                        help="Split into N independent workers, one per GPU. Only "
+                             "worth it on a MULTI-GPU node: measured on a 10-core "
+                             "CPU Mac, chunks 1/2/4 took 23.3/25.5/29.6s -- "
+                             "onnxruntime already spreads across cores, so extra "
+                             "processes just add model-load and contention")
     parser.add_argument("--cluster-threshold", type=float, default=0.5)
     parser.add_argument("--sim-threshold", type=float, default=0.45,
                         help="Cosine similarity to the instructor centroid above "
