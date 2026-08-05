@@ -70,7 +70,30 @@ source activate scs-video                # separate env from scs-learn: it has
                                          # conflicts with the audio env's
                                          # plain onnxruntime
 
-module load ffmpeg 2>/dev/null || true
+# Do NOT use PSC's ffmpeg module here. /opt/packages/ffmpeg/4.3.1/ffmpeg is a
+# shell wrapper around `singularity exec -B /ocean -B /bil -B /hive -B /local`,
+# and on the GPU nodes the /bil bind mount fails:
+#
+#   FATAL: container creation failed: mount hook function failure:
+#   mount /bil->/bil error: while getting stat for /bil: permission denied
+#
+# face_anon pipes raw frames into ffmpeg for the h264 encode, so when the
+# container refuses to start every chunk worker dies with BrokenPipeError --
+# *after* the expensive detection pass has already succeeded. Job 42802510 lost
+# 8 minutes of H100 time to exactly this, having completed all 29,832
+# detections first. The failure looks like a code bug and is not one.
+#
+# The conda env ships a real ffmpeg binary (7.1.1, gpl build, libx264/libx265)
+# with no container involved. `source activate` already puts it first on PATH;
+# loading the module afterwards is what used to shadow it.
+if [ -x "${CONDA_PREFIX:-}/bin/ffmpeg" ]; then
+    export PATH="$CONDA_PREFIX/bin:$PATH"
+    echo "ffmpeg  : $CONDA_PREFIX/bin/ffmpeg (native conda build)"
+else
+    module load ffmpeg 2>/dev/null || true
+    echo "ffmpeg  : $(command -v ffmpeg) (PSC module -- singularity wrapper," \
+         "may fail to start on some nodes)"
+fi
 command -v ffmpeg >/dev/null || { echo "ERROR: no ffmpeg on PATH" >&2; exit 1; }
 
 # onnxruntime-gpu takes its CUDA dependencies as nvidia-* pip packages, which

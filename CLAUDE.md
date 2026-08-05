@@ -139,8 +139,16 @@ Both files list **direct dependencies only**, not a `pip freeze`. For an exact
 reproduction, `pip freeze > requirements.lock.txt` from a working env and
 install from that.
 
-`ffmpeg` is **not on PSC's default PATH** — `module load ffmpeg` (4.3.1, with
-libx264/libx265).
+`ffmpeg` is **not on PSC's default PATH**. `module load ffmpeg` gives 4.3.1 with
+libx264/libx265, but that module is a **singularity wrapper**, not a binary —
+`/opt/packages/ffmpeg/4.3.1/ffmpeg` shell-execs `singularity exec -B /ocean -B
+/bil ...`, and the `/bil` bind mount fails on the GPU nodes. Anything that pipes
+into ffmpeg dies there.
+
+Both conda envs already carry a native `ffmpeg` (7.1.1, gpl build, libx264 and
+libx265) at `$CONDA_PREFIX/bin/ffmpeg`. On compute nodes prefer that and do not
+load the module — `source activate` already puts it first on PATH, and loading
+the module afterwards is precisely what shadows it.
 
 ---
 
@@ -227,7 +235,8 @@ real during development.
 | `refusing to assemble: ...camera_muted_anon.mp4 does not exist` | face_anon hasn't run, so faces are not anonymized | Run face_anon first. `--allow-unanonymized` only if that is genuinely intended. |
 | `refusing to run ['cards'] on PSC` | cards is local-only: 20+ min, not for PSC | Run the pipeline on a laptop, or `--skip cards` on PSC and do it locally |
 | `h264_nvenc` "listed by ffmpeg but fails to open an encode session" | GPU has no NVENC block (V100/A100/H100 have none) | Use `--encoder libx264`. There is no GPU encode path on PSC. |
-| `ffmpeg: command not found` on PSC | Not on the default PATH | `module load ffmpeg` |
+| `ffmpeg: command not found` on PSC | Not on the default PATH | `module load ffmpeg` — but on GPU nodes prefer the conda env's ffmpeg, below |
+| All chunk workers die with `BrokenPipeError: [Errno 32] Broken pipe`, *after* detection succeeded; log shows `container creation failed ... stat /bil: permission denied` | PSC's ffmpeg module is a singularity wrapper that bind-mounts `/bil`; the mount fails on GPU nodes, so ffmpeg never starts and the encode pipe breaks | Use `$CONDA_PREFIX/bin/ffmpeg` (7.1.1, gpl, libx264) instead of `module load ffmpeg`. `psc_face_anon.sbatch` now does this. |
 | ssh: three instant `Permission denied` with **no** `password:` prompt | No TTY, so ssh could not ask. `ssh -M -N -f` also implies `-n` | Run `ssh psc` in a real terminal. Never `-f` with password auth. |
 | ssh: password prompt appears but is rejected | PSC uses a **Kerberos** password, not CMU Andrew/SSO | Reset at <https://apr.psc.edu>, or `kpasswd` on-system (never `passwd`) |
 | `psc.sh sync`: "no session to the DTN" | Transfers may not go through a login node | `ssh -N psc-dtn` once, in a real terminal; leave it running |
@@ -270,11 +279,22 @@ real during development.
 
 ## Known limitations
 
-- **`face_anon.py` has never completed a full lecture *on PSC*.** The one PSC
-  attempt hit the V100 crash above. It has since run end to end locally on
-  lecture 12: `camera_muted_anon.mp4` is 4772.9s against a 4773.7s source, and
-  `track_instructor` produced a full-length crop from it. So the code path is
-  proven; what is unproven is the Slurm/`scs-video` side of it.
+- **`face_anon.py` has never completed a full lecture *on PSC*.** Three attempts,
+  three different failures, none of them the code:
+  1. V100 — `err 209 no kernel image`, died in ~3s (job 42801726).
+  2. H100 — `libcublasLt.so.12` missing, so onnxruntime fell back to
+     `CPUExecutionProvider` *silently* and benchmarked at 0.77 fps
+     detection-only, i.e. 81 min of inference even at chunks=8 (job 42801022).
+     Fixed by the `LD_LIBRARY_PATH` block in the sbatch.
+  3. H100 with CUDA genuinely active — all 29,832 detections completed in
+     ~2 min across 8 workers, then every worker died with `BrokenPipeError`
+     because the ffmpeg singularity container could not start (job 42802510,
+     failed at 8:05). Fixed by using the conda ffmpeg.
+
+  It has run end to end locally on lecture 12: `camera_muted_anon.mp4` is
+  4772.9s against a 4773.7s source, and `track_instructor` produced a
+  full-length crop from it. The detection path is now also proven on an H100 at
+  ~250 detections/s aggregate. What remains unproven on PSC is the encode.
 - **Question detection may be conservative.** On lecture 12, only 4 of 1,237
   segments were flagged `is_student_question` across 91 minutes. Spot-check
   before treating card coverage as complete — this is a privacy guarantee.
