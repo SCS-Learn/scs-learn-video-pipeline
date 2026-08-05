@@ -8,3 +8,7 @@ __pycache__/
 manifest*.json
 logs/
 *.log
+
+# Generated demo output -- rebuild with scripts/render_demo.py
+.demo-work/
+assets/themes/*/samples/
