@@ -137,7 +137,7 @@ TEXT_TOP, TEXT_BOTTOM = 371, 760
 # left from here rather than centred: the card is a designed layout, and a
 # centred ragged block under a flush-left "STUDENT QUESTION" heading reads as an
 # accident.
-TEXT_LEFT, TEXT_RIGHT = 120, 1800
+TEXT_LEFT, TEXT_RIGHT = 115, 1800
 
 # Above this, a card renders as a wall of small text. Measured: 3 of 4
 # questions on lecture 12 came back at 18-79 chars, one at 311.
