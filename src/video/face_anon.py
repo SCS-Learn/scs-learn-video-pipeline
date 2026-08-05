@@ -750,9 +750,17 @@ def main():
     # the pipeline, and muxing from camera_muted.mp4 keeps the muted audio.
     input_name = args.input
     if input_name is None:
-        muted = f"{args.stream}_muted.mp4"
-        input_name = muted if os.path.exists(
-            os.path.join(args.lecture_dir, muted)) else f"{args.stream}.mp4"
+        # Most-processed first. _sync.mp4 sits ahead of the raw stream because
+        # sync may have cut pre-lecture black off the front; falling back past
+        # it would anonymize a differently-timed video from the one the
+        # transcript was built against.
+        for cand in (f"{args.stream}_muted.mp4", f"{args.stream}_sync.mp4",
+                     f"{args.stream}.mp4"):
+            if os.path.exists(os.path.join(args.lecture_dir, cand)):
+                input_name = cand
+                break
+        else:
+            input_name = f"{args.stream}.mp4"
     video_path = os.path.join(args.lecture_dir, input_name)
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"No {input_name} in {args.lecture_dir}")

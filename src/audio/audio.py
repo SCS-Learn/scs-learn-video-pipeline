@@ -134,7 +134,9 @@ def main():
     )
 
     out = put_audio_into_video(
-        video_path=p.camera,
+        # Must match what transcription measured against, or the muted spans
+        # land at the wrong moments -- students unmuted, instructor cut out.
+        video_path=p.resolve_camera(),
         wav_path=p.camera_muted_wav,
         out_video_path=p.camera_muted,
     )

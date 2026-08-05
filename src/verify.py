@@ -140,18 +140,34 @@ def _stage_checks(stage, p):
     """(label, path, ref_path, kwargs) tuples for one stage's outputs."""
     if stage == "sync":
         # screen_sync is a trimmed screen, so it is legitimately shorter than
-        # screen.mp4; compare against the camera it was aligned to instead.
-        return [("screen_sync.mp4", p.screen_sync, p.camera,
-                 {"tol_s": 5.0})]
+        # screen.mp4; compare against the camera it was aligned to instead --
+        # the resolved one, since a black trim rewrites the camera too and
+        # comparing against raw camera.mp4 would then flag every healthy run.
+        checks = [("screen_sync.mp4", p.screen_sync, p.resolve_camera(),
+                   {"tol_s": 5.0})]
+        if os.path.exists(p.camera_sync):
+            # No reference: being shorter than camera.mp4 is the entire point.
+            checks.append(("camera_sync.mp4", p.camera_sync, None,
+                           {"expect_audio": True}))
+        return checks
     if stage == "transcription":
         return [("transcript_classified.json", p.transcript_classified, None, {})]
     if stage == "audio":
-        return [("camera_muted.mp4", p.camera_muted, p.camera,
+        return [("camera_muted.mp4", p.camera_muted, p.resolve_camera(),
                  {"expect_audio": True})]
     if stage == "face_anon":
-        src = p.camera_muted if os.path.exists(p.camera_muted) else p.camera
+        src = (p.camera_muted if os.path.exists(p.camera_muted)
+               else p.resolve_camera())
         return [("camera_muted_anon.mp4", p.camera_anon, src,
                  {"expect_audio": True})]
+    if stage == "track_instructor":
+        # The crop is a fraction of the source frame, so it is legitimately much
+        # smaller: a 0.5 zoom at crf 20 lands around 0.1-0.3x. Duration is the
+        # signal that matters here, so the size band is widened rather than
+        # flagging every healthy crop.
+        src = p.camera_anon if os.path.exists(p.camera_anon) else p.camera_muted
+        return [("camera_muted_anon_tracked.mp4", p.camera_tracked, src,
+                 {"expect_audio": True, "size_ratio": (0.02, 8.0)})]
     if stage == "cards":
         return [("screen_with_cards.mp4", p.screen_with_cards, p.screen_sync, {})]
     if stage == "captions":
@@ -230,8 +246,8 @@ def main():
     p = LecturePaths(args.lecture_dir)
 
     stages = ([args.stage] if args.stage else
-              ["sync", "transcription", "audio", "face_anon", "cards",
-               "captions", "assembly"])
+              ["sync", "transcription", "audio", "face_anon", "track_instructor",
+               "cards", "captions", "assembly"])
     total = 0
     for stage in stages:
         checks = _stage_checks(stage, p)

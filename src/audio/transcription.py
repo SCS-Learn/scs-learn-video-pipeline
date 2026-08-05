@@ -188,7 +188,9 @@ def main():
     args = parser.parse_args()
     p = LecturePaths(args.lecture_dir)
 
-    convert_mp4_to_wav(p.camera, p.camera_wav)
+    # resolve_camera(), not p.camera: sync may have cut pre-lecture black off
+    # the front, and every timestamp produced here is relative to that cut.
+    convert_mp4_to_wav(p.resolve_camera(), p.camera_wav)
     generate_transcript(p.camera_wav, p.transcript,
                         device=args.device, batch_size=args.batch_size)
 

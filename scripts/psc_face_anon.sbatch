@@ -1,9 +1,12 @@
 #!/bin/bash
 # Facial anonymization of the lecture camera stream, on Bridges-2.
 #
-# This is one of only two stages that genuinely needs a GPU (the other is
-# transcription): the cost is almost entirely InsightFace ONNX inference
-# (measured 98.9% of runtime), and that runs on CUDA. It does NOT need NVENC --
+# One of the three stages that genuinely need a GPU (the others are
+# transcription and track_instructor): the cost is almost entirely InsightFace
+# ONNX inference (measured 98.9% of runtime), and that runs on CUDA. Everything
+# in the V100 warning below applies to track_instructor too -- it imports this
+# module's detector, so it is the same env and the same crash. It does NOT need
+# NVENC --
 # the h264 encode is a rounding error here and goes through libx264 on the
 # node's CPUs. Every other stage is ffmpeg/CPU and belongs on RM-shared, except
 # cards, which is local-only.
@@ -129,4 +132,18 @@ srun python -m src.video.face_anon \
   --detect-every "$DETECT_EVERY" \
   --method pixelate
 
-echo "done: $LECTURE_DIR/$(basename "${STREAM_INPUT%.*}")_anon.mp4"
+ANON_OUT="$LECTURE_DIR/$(basename "${STREAM_INPUT%.*}")_anon.mp4"
+echo "done: $ANON_OUT"
+
+# track_instructor is the other GPU stage and wants the SAME node, env and GPU
+# type. Running it here reuses an allocation that is already warm rather than
+# queueing a second one; it must come after face_anon so the crop is taken from
+# the anonymized camera. Off by default because it roughly doubles the job's
+# GPU time -- set TRACK=1 to include it.
+if [ "${TRACK:-0}" = "1" ]; then
+  srun python -m src.video.track_instructor \
+    --lecture-dir "$LECTURE_DIR" \
+    --input "$(basename "$ANON_OUT")" \
+    --save-path "$LECTURE_DIR/track_path.json"
+  echo "done: ${ANON_OUT%.*}_tracked.mp4"
+fi

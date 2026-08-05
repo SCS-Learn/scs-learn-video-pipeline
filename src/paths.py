@@ -49,6 +49,16 @@ class LecturePaths:
     def screen_sync(self):
         return self._p("screen_sync.mp4")
 
+    @property
+    def camera_sync(self):
+        """Camera with the pre-lecture dead air removed.
+
+        Only written when the screen's black lead outlasts the duration-based
+        alignment; otherwise the camera needs no trim and this does not exist.
+        Both streams are cut by the same amount so they stay on one clock.
+        """
+        return self._p("camera_sync.mp4")
+
     # --- stage 4: transcription -----------------------------------------
     @property
     def camera_wav(self):
@@ -135,6 +145,19 @@ class LecturePaths:
     def resolve_transcript_classified(self):
         return self._resolve_legacy(self.transcript_classified,
                                     "transcript_classified.json")
+
+    def resolve_camera(self):
+        """The camera every stage after sync should start from.
+
+        camera.mp4 is the raw download; camera_sync.mp4 is that same file with
+        the pre-lecture black removed. Stages must not hardcode camera.mp4 --
+        transcript, card and caption timings are all relative to whichever of
+        these the pipeline actually cut to, and mixing the two shifts every
+        student question by the length of the trim.
+        """
+        if os.path.exists(self.camera_sync):
+            return self.camera_sync
+        return self.camera
 
     def resolve_pip_camera(self):
         """Best available picture-in-picture source, most-processed first.

@@ -9,7 +9,18 @@ Stage order matters in two non-obvious ways:
   * face_anon must run AFTER audio (it consumes camera_muted.mp4, so the muted
     audio is carried through the remux) and BEFORE assembly (which composites
     the anonymized camera into the final video).
+  * track_instructor must run AFTER face_anon: it crops in on the instructor,
+    and zooming an un-anonymized camera makes any student in frame MORE
+    identifiable, not less.
   * cards needs sync to have produced screen_sync.mp4 first.
+
+track_instructor is listed here rather than left as a manual command because
+assembly prefers its output whenever the file happens to exist. Off the stage
+list, whether a lecture got the tracked crop depended on someone remembering
+to run it, and two runs of this pipeline over the same lecture could produce
+different final videos with nothing in the log to say why. Skip it explicitly
+(--skip track_instructor) when you do not want it; assembly then falls back to
+the uncropped camera and says so.
 
 Where each stage belongs is encoded in STAGES. `cards` is marked local_only:
 it takes 20+ minutes and is not to be run on PSC. The runner refuses rather
@@ -32,6 +43,7 @@ STAGES = [
     ("transcription", "src.audio.transcription", "gpu",      "whisperx + diarization + question classification"),
     ("audio",         "src.audio.audio",       "cpu",        "mute non-instructor audio"),
     ("face_anon",     "src.video.face_anon",   "gpu_no_v100", "pixelate non-instructor faces"),
+    ("track_instructor", "src.video.track_instructor", "gpu_no_v100", "crop the camera to follow the instructor (PiP source)"),
     ("cards",         "src.audio.cards",       "local_only", "burn question cards (20+ min; NOT on PSC)"),
     ("captions",      "src.audio.captions",    "cpu",        "write .srt"),
     ("assembly",      "src.assembly.assembly", "cpu",        "final picture-in-picture"),
@@ -114,13 +126,13 @@ def main():
     total = 0.0
     for name, module, where, _ in selected:
         extra = []
-        if name == "face_anon" and where == "gpu_no_v100":
+        if where == "gpu_no_v100":
             # Guard rail rather than a silent crash: onnxruntime-gpu has no
-            # sm_70 kernels, so this stage dies ~3s into a V100 job.
-            gpu = os.environ.get("SLURM_JOB_GPUS", "") + os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            # sm_70 kernels, so these stages die ~3s into a V100 job. Applies to
+            # track_instructor too -- it imports face_anon's detector.
             if here_is_psc and "v100" in os.environ.get("SLURM_JOB_PARTITION", "").lower():
-                print("[pipeline] WARNING: face_anon cannot run on V100 (sm_70 "
-                      "unsupported by onnxruntime-gpu). Use l40s-48 or h100-80.")
+                print(f"[pipeline] WARNING: {name} cannot run on V100 (sm_70 "
+                      f"unsupported by onnxruntime-gpu). Use l40s-48 or h100-80.")
         total += run_stage(name, module, args.lecture_dir, extra, args.dry_run)
         if not args.dry_run and not args.no_verify:
             try:

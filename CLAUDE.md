@@ -61,7 +61,7 @@ Getting this wrong wastes hours.
 | **Your laptop** | `ingestion.py` (needs a real browser), `panopto_download.py`, `cards.py`, all editing, CPU testing |
 | **PSC login node** | `ls`, `squeue`, `sacct`, `sinfo`, `module avail`, `pip list`. **Nothing else.** |
 | **PSC DTN** (`data.bridges2.psc.edu`) | all file transfers |
-| **PSC compute** (`sbatch`/`interact`) | `transcription.py`, `face_anon.py` |
+| **PSC compute** (`sbatch`/`interact`) | `transcription.py`, `face_anon.py`, `track_instructor.py` |
 
 ### Login node policy — do not violate
 
@@ -83,21 +83,33 @@ node.
 |---|---|---|---|
 | 1 | `src/ingestion.py` | laptop | `manifest.json` (manual browser SSO+Duo) |
 | 2 | `src/panopto_download.py` | laptop → DTN | `camera.mp4`, `screen.mp4` |
-| 3 | `src/sync.py` | CPU | `screen_sync.mp4` |
+| 3 | `src/sync.py` | CPU | `screen_sync.mp4` (+ `camera_sync.mp4`) |
 | 4 | `src/audio/transcription.py` | **GPU** | `transcript_classified.json` |
 | 5 | `src/audio/audio.py` | CPU | `camera_muted.mp4` |
 | 6 | `src/video/face_anon.py` | **GPU, not V100** | `camera_muted_anon.mp4` |
-| 7 | `src/audio/cards.py` | **laptop only** | `screen_with_cards.mp4` |
-| 8 | `src/audio/captions.py` | CPU | `captions.srt` |
-| 9 | `src/assembly/assembly.py` | CPU | final `<key>.mp4` |
+| 7 | `src/video/track_instructor.py` | **GPU, not V100** | `camera_muted_anon_tracked.mp4` |
+| 8 | `src/audio/cards.py` | **laptop only** | `screen_with_cards.mp4` |
+| 9 | `src/audio/captions.py` | CPU | `captions.srt` |
+| 10 | `src/assembly/assembly.py` | CPU | final `<key>.mp4` |
 
 Order constraints that aren't obvious:
 - **face_anon runs after audio** (it consumes `camera_muted.mp4`, carrying the
   muted audio through) and **before assembly** (which composites the anonymized
   camera in).
+- **track_instructor runs after face_anon.** It crops in on the instructor, and
+  zooming an *un*-anonymized camera makes any student in frame more
+  identifiable, not less. The stage warns loudly if its input has no `anon` in
+  the name, but the ordering is what actually protects you.
 - cards needs `sync` to have produced `screen_sync.mp4`.
 
-Only stages 4 and 6 need a GPU. Everything else is ffmpeg/CPU.
+Only stages 4, 6 and 7 need a GPU. Everything else is ffmpeg/CPU.
+
+`track_instructor` is optional in effect — `assembly` falls back to the
+uncropped camera when its output is absent, and logs which one it used either
+way. Skip it with `--skip track_instructor`. It is on the stage list rather
+than left as a manual command because `assembly` *prefers* its output whenever
+the file exists: off the list, two runs over the same lecture could produce
+different final videos depending on whether someone remembered to run it.
 
 **`cards.py` takes 20+ minutes and is not to be run on PSC.** `src/pipeline.py`
 enforces this — it refuses to run `cards` when it detects it is on PSC. Run the
@@ -116,11 +128,16 @@ Submit GPU stages with:
 |---|---|---|
 | `.venv` | laptop | `requirements.txt` |
 | `scs-learn` | PSC | audio: whisperx, torch, pyannote, anthropic, pysrt, soundfile, pillow |
-| `scs-video` | PSC | video: insightface, **onnxruntime-gpu**, opencv, sklearn |
+| `scs-video` | PSC | video: insightface, **onnxruntime-gpu**, onnx, opencv, sklearn |
 
 Separate on purpose: `insightface` pulls plain `onnxruntime`, which conflicts
 with `onnxruntime-gpu`. Locally that split is `requirements.txt` vs
-`requirements-video.txt`.
+`requirements-video.txt`. Never install both files into one venv — the CPU
+build wins and inference silently drops ~25x.
+
+Both files list **direct dependencies only**, not a `pip freeze`. For an exact
+reproduction, `pip freeze > requirements.lock.txt` from a working env and
+install from that.
 
 `ffmpeg` is **not on PSC's default PATH** — `module load ffmpeg` (4.3.1, with
 libx264/libx265).
@@ -143,10 +160,35 @@ Use `--gpus=l40s-48:8` or `--gpus=h100-80:8`. **This, not slowness, is why the
 stage never ran on PSC.** `transcription.py` is fine on V100 because PyTorch
 still ships sm_70 kernels — same node, opposite outcome.
 
+`track_instructor.py` inherits this exactly: it imports `build_app` from
+`face_anon`, so it is the same detector, the same onnxruntime, the same crash.
+
 **There is no NVENC path on PSC.** PSC's `ffmpeg/4.3.1` is built without nvenc
 (hwaccels: vdpau/vaapi/vulkan only), and most Bridges-2 GPUs lack the silicon
 anyway (V100/A100/H100 have none; only L40S does). All H.264 encoding is
 `libx264` on CPU. Don't "fix" a slow encode by reaching for `h264_nvenc`.
+
+**Never hardcode `camera.mp4` after sync — use `paths.resolve_camera()`.**
+`sync.py` removes the black lead in front of the lecture, and when that trim is
+needed it writes `camera_sync.mp4` and every later stage must read *that*.
+Transcript, card and caption timings are all relative to whichever file was
+actually cut to; mixing the two shifts every student question by the length of
+the trim, which un-mutes students. The trim comes off the screen **and** the
+camera together — cutting only the screen slides it out of sync by exactly the
+amount removed.
+
+On lecture 12 this changes nothing: the screen is black for its first 629.0s,
+the duration alignment already removes 718.7s, so the residual is zero and
+`camera_sync.mp4` is never written. The margin was 89.7 seconds. A lecture whose
+screen starts only 3 minutes early but is dark for 10 would have published
+seven minutes of black, and `verify.py` would have passed it — a black,
+well-encoded segment satisfies every duration, size and bytes-per-second check.
+
+**Measure black with ffmpeg at `-v info`, not `-v error`.** `blackdetect` logs
+its findings at info level, so `-v error` reports a completely black file as
+having no black at all. Scan far enough, too: `-t 400` on lecture 12 reports the
+black ending at 400s because that is where the scan stopped, not where the black
+did. `sync.py` warns when a run is still going at the edge of its window.
 
 **Don't reintroduce ffmpeg `overlay` in `cards.py`.** The card template is a
 fully opaque 1920x1080 PNG and the screen is exactly 1920x1080, so a card
@@ -194,6 +236,9 @@ real during development.
 | `libcublasLt.so.12: cannot open shared object file`, then silent CPU fallback | onnxruntime-gpu's CUDA libs ship as `nvidia-*` pip packages under `site-packages/nvidia/*/lib`, which the loader does not search | Add those dirs to `LD_LIBRARY_PATH` (see `scripts/psc_face_anon.sbatch`) or `module load cuda/12.6.1` |
 | `Disk quota exceeded` mid-job | `/jet/home` is 25 GB and typically ~90% full | Work under `/ocean/projects/cis260220p/$USER/`; set `HF_HOME` there too |
 | Downstream stages use the wrong lecture's transcript | Legacy shared `data/transcription/` rather than per-lecture | Move the transcript into the lecture dir; `src/paths.py` warns when it falls back |
+| Published video opens with minutes of black before the lecture starts | The screen capture's black lead outlasted the duration-alignment trim | `sync.py` now cuts the residual off both streams. Check its `trimming a further Ns of black` line; raise `--black-scan-seconds` if it warns the scan window ended mid-run. |
+| Student questions are audible, or the instructor is muted, and everything is off by a constant | A stage read `camera.mp4` while the transcript was built against `camera_sync.mp4` (or vice versa) | Use `paths.resolve_camera()`. Delete a stale `camera_sync.mp4` if sync says it needed no trim. |
+| Two runs over the same lecture produce different final videos; the PiP is zoomed in one and wide in the other | `assembly` prefers `camera_muted_anon_tracked.mp4` whenever it exists, so the result depended on whether `track_instructor` had been run | It is a pipeline stage now, so it runs by default. `assembly` logs `pip source=` on every run. Use `--skip track_instructor` (or `assembly --no-tracked`) to choose the wide shot deliberately. |
 | Instructor is blurred and students are clear | Wrong cluster chosen as instructor | `face_anon --preview` → inspect `face_clusters.png` → `--instructor-cluster <id>` |
 | cards takes tens of minutes and thrashes memory | Old ffmpeg `overlay` chain, O(questions × duration) | Should be cut-render-concat. Check `cards.py` has not been reverted. |
 
@@ -202,7 +247,8 @@ real during development.
 1. **Never run compute on a PSC login node.** If unsure a command is "light",
    assume it is not.
 2. **Never run `cards.py` on PSC.** 20+ minutes; laptop only.
-3. **Never use `--gpus=v100-*` for `face_anon.py`.** It will crash.
+3. **Never use `--gpus=v100-*` for `face_anon.py` or `track_instructor.py`.**
+   Both use the same insightface detector; both will crash.
 4. **Keep `--time` on job scripts.** A runaway 8-GPU job is a visible fraction
    of a 495 GPU-hour grant.
 5. **Dry-run first.** `src.pipeline --dry-run`, `cards.py --dry-run`,
@@ -224,8 +270,11 @@ real during development.
 
 ## Known limitations
 
-- **`face_anon.py` has never completed a full lecture.** The only PSC attempt
-  hit the V100 crash above; local testing covered a 300-frame window.
+- **`face_anon.py` has never completed a full lecture *on PSC*.** The one PSC
+  attempt hit the V100 crash above. It has since run end to end locally on
+  lecture 12: `camera_muted_anon.mp4` is 4772.9s against a 4773.7s source, and
+  `track_instructor` produced a full-length crop from it. So the code path is
+  proven; what is unproven is the Slurm/`scs-video` side of it.
 - **Question detection may be conservative.** On lecture 12, only 4 of 1,237
   segments were flagged `is_student_question` across 91 minutes. Spot-check
   before treating card coverage as complete — this is a privacy guarantee.

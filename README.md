@@ -10,16 +10,24 @@ University Lecture Recordings*.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # audio stages
-pip install -r requirements-video.txt    # face anonymization (separate env)
 cp .env.sample .env                      # then fill it in
 
 python -m src.pipeline --lecture-dir data/15210-lecture12 --dry-run
 ```
 
+The video stages need their own environment — `requirements-video.txt` installs
+`onnxruntime`, which shadows `onnxruntime-gpu` if the two land in one venv:
+
+```bash
+python -m venv .venv-video && source .venv-video/bin/activate
+pip install -r requirements-video.txt    # face anonymization + tracking
+```
+
 Every stage takes `--lecture-dir`; `src/pipeline.py` runs them in order.
 
 ```
-sync → transcription → audio → face_anon → cards → captions → assembly
+sync → transcription → audio → face_anon → track_instructor → cards → captions → assembly
+                                  └──────── GPU, never V100 ────────┘
 ```
 
 **Read [CLAUDE.md](CLAUDE.md) before running anything on PSC.** It covers the

@@ -1,3 +1,4 @@
+import os
 import subprocess
 from src.paths import LecturePaths, lecture_parser
 from src.sync import get_duration
@@ -106,8 +107,18 @@ def main():
 
     if not args.skip_pip:
         pip_src = camera if args.no_tracked else p.resolve_pip_camera()
+        # Always say which source won. The choice depends on whether a file
+        # happens to exist, so silence here meant two runs over the same lecture
+        # could differ with nothing in the log to explain it.
         if pip_src != camera:
             print(f"[assembly] pip source={pip_src} (instructor-tracked crop)")
+        elif args.no_tracked:
+            print(f"[assembly] pip source={pip_src} (--no-tracked: uncropped)")
+        else:
+            print(f"[assembly] pip source={pip_src} (uncropped -- "
+                  f"{os.path.basename(p.camera_tracked)} not found; run "
+                  f"'python -m src.video.track_instructor --lecture-dir {p.dir}' "
+                  f"for a closer picture-in-picture)")
         out = composite_pip(
             screen_path=p.screen_with_cards,
             camera_path=pip_src,

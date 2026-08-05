@@ -295,7 +295,8 @@ def main():
     if args.input:
         name = args.input
     else:
-        for cand in ("camera_muted_anon.mp4", "camera_muted.mp4", "camera.mp4"):
+        for cand in ("camera_muted_anon.mp4", "camera_muted.mp4",
+                     "camera_sync.mp4", "camera.mp4"):
             if os.path.exists(os.path.join(args.lecture_dir, cand)):
                 name = cand
                 break
