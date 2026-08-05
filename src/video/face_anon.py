@@ -215,21 +215,52 @@ def identify_instructor(
     cluster_threshold=0.5,
     merge_threshold=0.5,
     min_cluster_share=0.0,
+    opening_seconds=20.0,
+    opening_frames=60,
 ):
     """Sample frames across the video and return (centroid, clusters, info).
 
     Screen time is estimated from how many *sampled* frames each cluster appears
-    in, which is an unbiased estimate of the real share because the sample is
-    uniform. The highest-share cluster is the instructor.
+    in. That is an unbiased estimate only while the sample is uniform, and the
+    highest-share cluster is taken to be the instructor -- so the extra opening
+    frames below are excluded from the share arithmetic.
+
+    Why the opening is sampled densely: a uniform 400-frame sample over a
+    119,344-frame lecture puts roughly zero samples in the first few seconds, so
+    whatever the instructor looks like there is unrepresented among the
+    prototypes. On lecture 12 he opens standing against a blown-out projection
+    screen; backlit, he scores 0.356 against the prototypes and the fail-closed
+    rule pixelates him for the first ~4 seconds. Sampling the opening gives that
+    appearance a chance to be represented WITHOUT touching sim_threshold, which
+    has to stay tight -- a measurably different person scored 0.348.
     """
     meta = probe(video_path)
     end_frame = end_frame if end_frame is not None else meta["n_frames"]
     span = max(1, end_frame - start_frame)
     n = min(sample_frames, span)
-    idxs = np.unique(np.linspace(start_frame, end_frame - 1, n).astype(int))
+    idxs_uniform = np.unique(np.linspace(start_frame, end_frame - 1, n).astype(int))
+
+    idxs_open = np.array([], dtype=int)
+    if opening_frames > 0 and opening_seconds > 0:
+        opening_end = min(end_frame - 1,
+                          start_frame + int(opening_seconds * meta["fps"]))
+        if opening_end > start_frame:
+            idxs_open = np.unique(np.linspace(
+                start_frame, opening_end,
+                min(opening_frames, opening_end - start_frame)).astype(int))
+
+    uniform_set = set(int(v) for v in idxs_uniform)
+    idxs = np.unique(np.concatenate([idxs_uniform, idxs_open])) \
+        if len(idxs_open) else idxs_uniform
+    n_extra = len(idxs) - len(idxs_uniform)
+    if n_extra:
+        print(f"[face_anon] +{n_extra} extra frames over the first "
+              f"{opening_seconds:g}s (prototypes only; excluded from shares)",
+              flush=True)
 
     cap = cv2.VideoCapture(video_path)
     embs, boxes, frames_seen, crops = [], [], [], []
+    is_uniform = []
     t0 = time.time()
     for k, i in enumerate(idxs):
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
@@ -244,6 +275,7 @@ def identify_instructor(
             embs.append(e)
             boxes.append(bboxes[j][:4])
             frames_seen.append(int(i))
+            is_uniform.append(int(i) in uniform_set)
             if len(crops) < 2000:
                 x1, y1, x2, y2 = [int(v) for v in bboxes[j][:4]]
                 crop = frame[max(0, y1):y2, max(0, x1):x2]
@@ -271,6 +303,14 @@ def identify_instructor(
             distance_threshold=cluster_threshold,
         ).fit_predict(E)
 
+    # Shares and the ranking that picks the instructor use ONLY the uniform
+    # sample. The dense opening frames still form and enrich clusters, but
+    # counting them would inflate whatever is on screen at the start and could
+    # hand "biggest cluster" to the wrong person on a lecture that opens on
+    # someone else.
+    U = np.array(is_uniform, dtype=bool) if is_uniform else np.ones(len(E), bool)
+    n_uni = max(1, int(U.sum()))
+
     clusters = []
     for lab in sorted(set(labels)):
         sel = np.where(labels == lab)[0]
@@ -279,14 +319,15 @@ def identify_instructor(
         clusters.append({
             "label": int(lab),
             "n": len(sel),
-            "share": len(sel) / len(E),
+            "n_uniform": int(U[sel].sum()),
+            "share": int(U[sel].sum()) / n_uni,
             "centroid": (c / norm) if norm > 0 else c,
             "example_crops": [crops[i] for i in sel[:12] if i < len(crops)],
             "mean_box_area": float(np.mean([
                 (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]) for i in sel
             ])),
         })
-    clusters.sort(key=lambda c: -c["n"])
+    clusters.sort(key=lambda c: (-c["n_uniform"], -c["n"]))
 
     # Agglomerative "average" linkage over-splits one person into several
     # clusters: average *pairwise* distance between two groups of noisy
@@ -456,18 +497,25 @@ def _expand_detections(sampled, detect_every, n_frames, linger=2):
     return per_frame
 
 
-def _decide_instructor(sims, sim_threshold):
-    """Median of the samples collected so far, so a single bad frame cannot
-    decide a whole track either way.
+def _decide_instructor(sims, sim_threshold, window=5):
+    """Median of the most recent `window` samples.
 
     Fail-closed on no samples. Median rather than max because max would give a
     student one lucky frame's chance to pass as the instructor, while median
     requires a majority -- and instructor frames measure 0.65-0.87 consistently
     against students' ~0.07, so a majority vote is decisive in both directions.
+
+    Recent samples rather than all of them because appearance changes during a
+    track: the instructor opens lecture 12 backlit against a blown-out
+    projection screen and scores 0.36-0.49 there, against 0.79-0.81 once he
+    steps away. Judging on the whole history would let those opening frames
+    outvote the truth for the rest of the track. A student cannot exploit this:
+    flipping needs 3 of the last 5 frames above threshold, and students measure
+    ~0.07.
     """
     if not sims:
         return False
-    return float(np.median(sims)) >= sim_threshold
+    return float(np.median(sims[-window:])) >= sim_threshold
 
 
 def process_chunk(
@@ -481,6 +529,10 @@ def process_chunk(
     method="pixelate",
     sim_threshold=0.45,
     recheck_samples=3,
+    # Re-checks for tracks still marked non-instructor: at most one every
+    # `recheck_every` frames, capped at `recheck_max` samples per track.
+    recheck_every=25,
+    recheck_max=40,
     encoder="libx264",
     crf=20,
     threads=None,
@@ -534,11 +586,28 @@ def process_chunk(
                 # face) and every later frame inherited that verdict, blurring
                 # him for 4.2s -- while those frames scored 0.65-0.84 on their
                 # own. One unlucky frame must not poison a whole track.
-                if len(hit["sims"]) < recheck_samples and centroid is not None:
+                #
+                # Beyond that opening window, keep re-sampling any track still
+                # marked NOT the instructor. That is the fail-closed direction,
+                # so it can only ever upgrade a face out of being blurred, never
+                # the reverse -- and it is what recovers the instructor after a
+                # spell of bad lighting. Without it his identity is frozen from
+                # his track's first few detections: on lecture 12 he opens
+                # backlit at 0.36 and stays pixelated until the track happens to
+                # break. Students keep failing these checks (~0.07), so the
+                # extra recognition calls are bounded by how long a
+                # non-instructor face stays on screen.
+                n = len(hit["sims"])
+                due = (n < recheck_samples or
+                       (not hit["is_instructor"]
+                        and n < recheck_max
+                        and off - hit.get("last_check", -10**9) >= recheck_every))
+                if due and centroid is not None:
                     emb = embed_face(app, frame, box, kpss[j], bboxes[j][4])
                     if emb is not None:
                         hit["sims"].append(
                             float(np.max(np.atleast_2d(centroid) @ emb)))
+                        hit["last_check"] = off
                         hit["is_instructor"] = _decide_instructor(
                             hit["sims"], sim_threshold)
             if not hit["is_instructor"]:
