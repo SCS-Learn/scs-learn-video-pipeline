@@ -1,15 +1,38 @@
-# Facial-anonymization stage (src/video/face_anon.py). Kept separate from the
-# main audio requirements because insightface pulls onnxruntime, which conflicts
-# with onnxruntime-gpu — use a dedicated env for the video stage.
+# Face anonymization and instructor tracking:
+#   src/video/face_anon.py
+#   src/video/track_instructor.py   (imports face_anon's detector)
 #
-# Local / CPU:   pip install -r requirements-video.txt
-# PSC / GPU:     pip install -r requirements-video.txt && \
-#                pip uninstall -y onnxruntime && pip install onnxruntime-gpu
-#                (insightface then auto-uses CUDAExecutionProvider)
+# A SEPARATE environment from requirements.txt, deliberately. insightface
+# depends on `onnxruntime` (the CPU build). Install that alongside
+# `onnxruntime-gpu` and the CPU build shadows the GPU one, inference silently
+# falls back to CPU, and the stage runs ~25x slower with nothing in the log
+# saying so. Never install both requirement files into one venv.
+#
+# Local / CPU (laptop):
+#
+#     pip install -r requirements-video.txt
+#
+# PSC / GPU (the `scs-video` env). insightface installs the CPU onnxruntime as
+# a dependency, so it has to be replaced AFTER this file, never before:
+#
+#     pip install -r requirements-video.txt
+#     pip uninstall -y onnxruntime && pip install "onnxruntime-gpu>=1.18"
+#     python -c "import onnxruntime as o; print(o.get_available_providers())"
+#     # must list CUDAExecutionProvider -- if it does not, you are on CPU
+#
+# onnxruntime is not pinned below on purpose: it arrives via insightface, and
+# listing it here would contradict the uninstall step above. This file used to
+# pin it, so following the file and following its own instructions gave you
+# opposite environments.
+#
+# These stages CANNOT run on a V100. onnxruntime-gpu's cuDNN ships no sm_70
+# kernels, so the job dies ~3s in with `err 209 no kernel image is available`.
+# Use --gpus=l40s-48 or --gpus=h100-80.
 
 opencv-python
 insightface
-onnxruntime
+# Imported directly by insightface's arcface_onnx.py and attribute.py, not just
+# transitively -- face recognition is what tells the instructor from a student.
 onnx
 scikit-learn
 numpy
