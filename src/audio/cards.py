@@ -59,15 +59,57 @@ from src.audio.audio import merge_speaker_spans
 from src.audio.transcription import get_instructor_label
 from src.paths import LecturePaths
 
-TEMPLATE_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "..",
-    "..",
-    "assets",
-    "student-question-card-template.png",
+_ASSETS = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
+
+# Card art now lives per theme. The single
+# assets/student-question-card-template.png this used to point at was removed
+# when the themes landed, which left every render raising OSError. Resolution
+# order: an explicit --theme, then professional, then the old flat path so a
+# checkout that still has it keeps working.
+THEME = os.environ.get("CARD_THEME", "professional")
+
+
+def _template_candidates(theme):
+    # Both spellings are in use: the professional theme ships question-card.png,
+    # the fun theme question.png.
+    for t in (theme, "professional"):
+        for n in ("question-card.png", "question.png"):
+            yield os.path.join(_ASSETS, "themes", t, n)
+    yield os.path.join(_ASSETS, "student-question-card-template.png")
+
+
+def template_for(theme=None):
+    for p in _template_candidates(theme or THEME):
+        if os.path.exists(p):
+            return p
+    raise SystemExit(
+        "no question-card template found. Generate one with:\n"
+        "    python scripts/render_theme_samples.py")
+
+
+TEMPLATE_PATH = next(
+    (p for p in _template_candidates(THEME) if os.path.exists(p)),
+    os.path.join(_ASSETS, "themes", "professional", "question-card.png"),
 )
-FONT_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "assets", "fonts", "OpenSans-Regular.ttf"
+
+# Played over every card. The screen has no audio track, so this is mixed into
+# the final deliverable by assembly.py, which reads the manifest below.
+CARD_SOUND_PATH = next(
+    (p for p in (os.path.join(_ASSETS, "themes", THEME, "question-card-sound.mp3"),
+                 os.path.join(_ASSETS, "themes", "professional",
+                              "question-card-sound.mp3"))
+     if os.path.exists(p)),
+    os.path.join(_ASSETS, "themes", THEME, "question-card-sound.mp3"),
+)
+# The whole Open Sans family now lives in assets/fonts/static/. The loose
+# OpenSans-Regular.ttf this used to point at went away with that move, which
+# left cards.py raising OSError on every render.
+_FONTS = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "fonts")
+FONT_PATH = next(
+    (p for p in (os.path.join(_FONTS, "static", "OpenSans-Regular.ttf"),
+                 os.path.join(_FONTS, "OpenSans-Regular.ttf"))
+     if os.path.exists(p)),
+    os.path.join(_FONTS, "static", "OpenSans-Regular.ttf"),
 )
 
 BLACK = (0, 0, 0)
@@ -83,7 +125,19 @@ CARD_W, CARD_H = 1920, 1080
 # an 8-line question passed the fit check at full size and was then centred to
 # y=312 -- on top of a heading that runs to 326. A long question visibly
 # collided with the heading in the published video.
-TEXT_TOP, TEXT_BOTTOM = 360, 1010
+#
+# The band stops at 850, not at the 1010 the card physically allows. Text is
+# centred in it, and the heading above is part of the template art so it cannot
+# move; centring in the full band dropped a two-line question ~275px clear of
+# the heading, leaving the two looking unrelated with the block sitting low.
+# A shorter band keeps the centring but pulls the text back up under its label.
+TEXT_TOP, TEXT_BOTTOM = 371, 760
+
+# Horizontal bounds, matching the template's own left margin. Text is set flush
+# left from here rather than centred: the card is a designed layout, and a
+# centred ragged block under a flush-left "STUDENT QUESTION" heading reads as an
+# accident.
+TEXT_LEFT, TEXT_RIGHT = 120, 1800
 
 # Above this, a card renders as a wall of small text. Measured: 3 of 4
 # questions on lecture 12 came back at 18-79 chars, one at 311.
@@ -225,6 +279,21 @@ def get_duration(path):
 # ---------------------------------------------------------------------------
 # Card rendering (visual output unchanged)
 # ---------------------------------------------------------------------------
+def _wrap_to_width(draw, text, font, max_w):
+    """Greedy wrap on measured pixel width. Returns a newline-joined string."""
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        trial = f"{cur} {w}".strip()
+        if draw.textlength(trial, font=font) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
+
+
 def render_card(
     question_text,
     template_path=TEMPLATE_PATH,
@@ -233,32 +302,36 @@ def render_card(
 ):
     img = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(img)
-    WIDTH = CARD_W
-    HEIGHT = CARD_H
     MAX_FONT_SIZE = 64
     MIN_FONT_SIZE = 32
-    WRAP_WIDTH = 42
+    SPACING = 18
+
+    avail_w = TEXT_RIGHT - TEXT_LEFT
+    avail_h = TEXT_BOTTOM - TEXT_TOP
 
     font_size = MAX_FONT_SIZE
-    avail_h = TEXT_BOTTOM - TEXT_TOP
     while font_size >= MIN_FONT_SIZE:
         font = ImageFont.truetype(font_path, font_size)
-        wrapped = textwrap.fill(question_text, width=WRAP_WIDTH)
-        bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=18)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-
-        if text_w <= WIDTH - 200 and text_h <= avail_h:
+        # Wrap on measured width, not a character count. The old WRAP_WIDTH=42
+        # broke lines by characters, so a card with 1680px of usable width still
+        # set short lines and then shrank the type to fit a height it was never
+        # close to filling.
+        wrapped = _wrap_to_width(draw, question_text, font, avail_w)
+        bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=SPACING)
+        if (bbox[3] - bbox[1]) <= avail_h:
             break
         font_size -= 4
 
-    # bbox[1] is the ascender offset, not zero; ignoring it shifted every card
-    # down by ~18px and pushed long text past the safe area.
-    x = (WIDTH - text_w) / 2 - bbox[0]
+    # Flush left, centred vertically in the band: a one-line question hugging
+    # the heading and a four-line one running to the bottom edge both look
+    # wrong, and centring the block keeps the card balanced at any length.
+    # bbox[0]/bbox[1] are the left bearing and ascender offset, not zero;
+    # ignoring them shifted every card down by ~18px.
+    text_h = bbox[3] - bbox[1]
     y = TEXT_TOP + (avail_h - text_h) / 2 - bbox[1]
-
     draw.multiline_text(
-        (x, y), wrapped, font=font, fill=BLACK, spacing=18, align="center"
+        (TEXT_LEFT - bbox[0], y), wrapped, font=font,
+        fill=BLACK, spacing=SPACING, align="left"
     )
 
     if len(question_text) > CARD_TEXT_BUDGET:
@@ -437,6 +510,24 @@ def burn_question_cards(
             p["png"] = render_card(
                 text, out_path=os.path.join(cards_dir, f"card_{p['index']:03d}.png")
             )
+
+        # Manifest of where cards actually land. plan_timeline merges cards that
+        # overlap, so these spans are NOT the raw question intervals -- anything
+        # downstream that needs card timing (assembly mixing the card sound)
+        # has to read them from here rather than recomputing from the transcript.
+        manifest = [
+            {"index": p["index"],
+             "start": p["start_frame"] / fps,
+             "end": (p["start_frame"] + p["n_frames"]) / fps,
+             "text": get_span_text(segments, question_intervals[p["index"]]["start"],
+                                   question_intervals[p["index"]]["end"])}
+            for p in pieces if p["kind"] == "card"
+        ]
+        manifest_path = os.path.join(os.path.dirname(os.path.abspath(out_path)),
+                                     "cards.json")
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"[cards] wrote {manifest_path} ({len(manifest)} card spans)")
 
         def encode(args):
             i, p = args

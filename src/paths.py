@@ -90,6 +90,34 @@ class LecturePaths:
     def screen_with_cards(self):
         return self._p("screen_with_cards.mp4")
 
+    @property
+    def cards_manifest(self):
+        """Where the cards actually landed, written by cards.py.
+
+        Card spans are not the raw question intervals -- overlapping cards get
+        merged during planning -- so assembly reads timings from here rather
+        than recomputing them from the transcript and drifting.
+        """
+        return self._p("cards.json")
+
+    @property
+    def card_sound(self):
+        """Sting played over every question card.
+
+        Per theme: both themes currently ship a byte-identical copy, but the
+        file lives inside each theme directory rather than beside them, so the
+        lookup follows the theme rather than assuming one shared asset.
+        """
+        assets = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "..", "assets", "themes")
+        theme = os.environ.get("CARD_THEME", "professional")
+        for cand in (os.path.join(assets, theme, "question-card-sound.mp3"),
+                     os.path.join(assets, "professional", "question-card-sound.mp3"),
+                     os.path.join(assets, "question-card-sound.mp3")):
+            if os.path.exists(cand):
+                return cand
+        return os.path.join(assets, theme, "question-card-sound.mp3")
+
     # --- stage 7: captions -----------------------------------------------
     @property
     def captions(self):

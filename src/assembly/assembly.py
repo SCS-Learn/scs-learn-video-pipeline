@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 from src.paths import LecturePaths, lecture_parser
@@ -71,6 +72,62 @@ def camera_only(camera_path, out_path, duration, width=1920, height=1080,
     return out_path
 
 
+
+# question-card-sound.mp3 is mastered at -7.7 LUFS and peaks at 0.0 dBFS --
+# roughly 12 dB hotter than the lecture itself, which measures -19.5 LUFS. At
+# unity it lands ~15 dB above the instructor's speech, and it arrives during a
+# deliberately silent stretch, so it reads as a jolt. 0.22 puts it at about
+# -20.5 LUFS: just under the speech it interrupts. 0.25 is exact parity.
+CARD_SOUND_GAIN = 0.22
+
+
+def mix_card_sound(video_path, manifest_path, sound_path, out_path,
+                   gain=CARD_SOUND_GAIN, max_cards=64):
+    """Mix the card sting into the finished video at every card span.
+
+    The screen carries no audio, so the deliverable's soundtrack is the camera's
+    muted track. During a student question that track is *silent by design* --
+    the audio pass mutes it -- so a card currently plays over nothing. This
+    fills that silence without touching the instructor's speech.
+
+    Video is stream-copied; only the audio is re-encoded.
+
+    Returns the path actually written: unchanged when there is nothing to mix.
+    """
+    if not (os.path.exists(manifest_path) and os.path.exists(sound_path)):
+        return video_path
+    with open(manifest_path) as f:
+        cards = json.load(f)
+    if not cards:
+        return video_path
+    if len(cards) > max_cards:
+        # One amix input per card; thousands would build an unusable graph.
+        print(f"[assembly] {len(cards)} cards, mixing the first {max_cards} "
+              f"only -- raise max_cards if this is real")
+        cards = cards[:max_cards]
+
+    n = len(cards)
+    parts = [f"[1:a]volume={gain},asplit={n}" +
+             "".join(f"[c{i}]" for i in range(n)) + ";"]
+    for i, c in enumerate(cards):
+        # adelay wants milliseconds per channel; all= applies it to both.
+        parts.append(f"[c{i}]adelay={int(c['start'] * 1000)}:all=1[d{i}];")
+    # normalize=0 keeps amix from ducking the lecture audio by 1/n every time a
+    # sting plays -- the default would make the instructor quieter at each card.
+    parts.append("[0:a]" + "".join(f"[d{i}]" for i in range(n)) +
+                 f"amix=inputs={n + 1}:duration=first:normalize=0[aout]")
+    fc = "".join(parts)
+
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", video_path, "-i", sound_path,
+         "-filter_complex", fc, "-map", "0:v", "-map", "[aout]",
+         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+         "-movflags", "+faststart", out_path],
+        check=True)
+    print(f"[assembly] mixed the card sound into {n} card span(s)")
+    return out_path
+
+
 def main():
     parser = lecture_parser("Composite the final picture-in-picture video.")
     parser.add_argument("--allow-unanonymized", action="store_true",
@@ -87,6 +144,11 @@ def main():
                              "with muted audio and NO screen composited in")
     parser.add_argument("--skip-pip", action="store_true",
                         help="Write only the camera-only file, not the PiP one")
+    parser.add_argument("--no-card-sound", action="store_true",
+                        help="Do not mix the sting over question cards")
+    parser.add_argument("--card-sound-gain", type=float, default=CARD_SOUND_GAIN,
+                        help="Linear gain for the sting. The supplied file is "
+                             "mastered ~12 dB hotter than the lecture.")
     args = parser.parse_args()
     p = LecturePaths(args.lecture_dir)
 
@@ -127,6 +189,13 @@ def main():
             pip_width=args.pip_width,
             position=args.pip_position,
         )
+        if not args.no_card_sound:
+            tmp = out + ".snd.mp4"
+            if mix_card_sound(out, p.cards_manifest, p.card_sound, tmp,
+                              gain=args.card_sound_gain) == tmp:
+                os.replace(tmp, out)
+            elif os.path.exists(tmp):
+                os.remove(tmp)
         print(f"[assembly] wrote {out}")
 
     if args.camera_only or args.skip_pip:
