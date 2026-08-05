@@ -181,26 +181,144 @@ def identify_student_questions(segments, instructor_label):
     return segments
 
 
+def identify_repeated_questions(segments, instructor_label, window=10.0,
+                                max_student_words=12, batch=40):
+    """Recover questions the instructor repeats back to the room.
+
+    identify_student_questions only ever inspects non-instructor segments, and
+    forces every instructor segment to False. That is structurally unable to
+    catch the commonest shape in a real lecture: a student asks from the floor,
+    the room mic barely picks them up, and the instructor repeats the question
+    so everyone can hear it. Diarization then puts the *question text* on the
+    instructor and leaves the student with a fragment.
+
+    Measured on lecture 12 at 598.3s the student's whole segment transcribes as
+    "Yeah?", while "If you want an old version, where are they stored?" is
+    attributed to the instructor 2 seconds later. Only 4 of 1,237 segments were
+    flagged across 91 minutes, and this is a large part of why.
+
+    The card still goes on the STUDENT's span -- that is when the audio is
+    muted, so the card fills the silence -- but its text comes from the
+    instructor's restatement, which is cleaner audio and better phrased than
+    anything the room mic captured.
+    """
+    load_dotenv()
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+    cands = []
+    for i, seg in enumerate(segments):
+        if seg.get("speaker") == instructor_label or seg.get("is_student_question"):
+            continue
+        # A student whose question was captured cleanly does not need this pass;
+        # the giveaway is a very short fragment ("Yeah?", "Sorry?", inaudible).
+        if len(seg["text"].split()) > max_student_words:
+            continue
+        after = []
+        for nxt in segments[i + 1:]:
+            if nxt["start"] - seg["end"] > window:
+                break
+            if nxt.get("speaker") == instructor_label:
+                after.append(nxt["text"].strip())
+            if sum(len(a) for a in after) > 600:
+                break
+        if after:
+            cands.append({"index": i, "student": seg["text"].strip(),
+                          "instructor_follows": " ".join(after)[:600]})
+
+    if not cands:
+        print("[transcription] repeat-back pass: no candidates")
+        return segments
+
+    found = 0
+    for k in range(0, len(cands), batch):
+        chunk = cands[k:k + batch]
+        prompt = f"""In a lecture, students often ask questions the room mic barely
+    captures, and the instructor repeats the question back before answering.
+
+    Each item below is a short non-instructor segment plus what the instructor
+    said immediately after. Decide whether the instructor is REPEATING BACK a
+    student question. Restating a question sounds like "so the question is...",
+    "you're asking whether...", or simply asking the question aloud before
+    answering it. Continuing to lecture, or asking the room a rhetorical or
+    checking question ("make sense?", "any questions?"), is NOT a repeat-back.
+
+    Be conservative: only say true when the instructor is clearly voicing a
+    question that came from a student.
+
+    If true, write that question as a SHORT question for a slide: at most 160
+    characters, no names, no filler.
+
+    Items:
+    {json.dumps(chunk, indent=2)}
+
+    Respond with ONLY a JSON array, no markdown:
+    [{{"index": <the item's index>, "is_repeat_back": true, "text": "..."}}]
+    Every index must appear exactly once."""
+
+        resp = client.messages.create(model="claude-sonnet-4-6", max_tokens=4000,
+                                      messages=[{"role": "user", "content": prompt}])
+        try:
+            out = json.loads(resp.content[0].text.strip())
+        except json.JSONDecodeError:
+            print("[transcription] repeat-back pass: unparseable reply, skipping batch")
+            continue
+        for r in out:
+            if not r.get("is_repeat_back"):
+                continue
+            seg = segments[r["index"]]
+            seg["is_student_question"] = True
+            seg["text"] = r["text"]
+            seg["question_source"] = "instructor_repeat_back"
+            found += 1
+
+    print(f"[transcription] repeat-back pass: {len(cands)} candidates, "
+          f"{found} additional student questions recovered")
+    return segments
+
+
 def main():
     parser = lecture_parser("Transcribe + diarize + classify student questions.")
     parser.add_argument("--device", default=None, choices=["cuda", "cpu"])
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--reclassify", action="store_true",
+                        help="Re-run only the question classification over the "
+                             "existing transcript. No ASR, no diarization, so "
+                             "no GPU -- use this after changing the prompts "
+                             "rather than paying for transcription again.")
+    parser.add_argument("--no-repeat-back", action="store_true",
+                        help="Skip recovering questions the instructor repeats")
     args = parser.parse_args()
     p = LecturePaths(args.lecture_dir)
 
-    # resolve_camera(), not p.camera: sync may have cut pre-lecture black off
-    # the front, and every timestamp produced here is relative to that cut.
-    convert_mp4_to_wav(p.resolve_camera(), p.camera_wav)
-    generate_transcript(p.camera_wav, p.transcript,
-                        device=args.device, batch_size=args.batch_size)
-
-    with open(p.transcript) as f:
-        segments = json.load(f)
+    if args.reclassify:
+        src = (p.resolve_transcript_classified()
+               if os.path.exists(p.transcript_classified)
+               else p.resolve_transcript())
+        print(f"[transcription] reclassifying {src} (no ASR, no GPU)")
+        with open(src) as f:
+            segments = json.load(f)
+    else:
+        # resolve_camera(), not p.camera: sync may have cut pre-lecture black off
+        # the front, and every timestamp produced here is relative to that cut.
+        convert_mp4_to_wav(p.resolve_camera(), p.camera_wav)
+        generate_transcript(p.camera_wav, p.transcript,
+                            device=args.device, batch_size=args.batch_size)
+        with open(p.transcript) as f:
+            segments = json.load(f)
 
     instructor_label = get_instructor_label(segments)
     print(f"[transcription] instructor speaker label: {instructor_label}")
 
+    if args.reclassify:
+        # Start from a clean slate so a rerun cannot inherit a stale verdict.
+        for s in segments:
+            s.pop("is_student_question", None)
+            s.pop("question_source", None)
+
     classified_segments = identify_student_questions(segments, instructor_label)
+    if not args.no_repeat_back:
+        classified_segments = identify_repeated_questions(
+            classified_segments, instructor_label)
     with open(p.transcript_classified, "w") as f:
         json.dump(classified_segments, f, indent=2)
     n_q = sum(1 for s in classified_segments if s.get("is_student_question"))
