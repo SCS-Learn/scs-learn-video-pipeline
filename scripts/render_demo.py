@@ -132,9 +132,9 @@ def rail_overlay(name, t):
         y += 44
     d.text((CAM_X, y + 6), TERM, font=font("Regular", 32),
            fill=(255, 235, 238, 255))
-    d.text((CAM_X, H - 110), "Carnegie Mellon", font=serif(36),
-           fill=(255, 255, 255, 255))
-    d.text((CAM_X, H - 66), "University", font=serif(36), fill=(255, 255, 255, 255))
+    # The CMU seal and wordmark are PRINTED INTO pip-frame.png now, occupying
+    # y 926..1057 of the rail. Drawing our own would double them up, so this
+    # layer stops at the term and leaves everything below y=926 to the art.
     return lay
 
 
