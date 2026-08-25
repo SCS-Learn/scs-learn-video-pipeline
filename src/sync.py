@@ -106,18 +106,35 @@ def leading_black(path, scan_seconds=900.0, pic_th=0.98, min_run=0.5,
     return end
 
 
-def _trim(src_path, out_path, seconds):
+def _trim(src_path, out_path, seconds, exact=False):
     """Copy `src_path` to `out_path` minus its first `seconds`.
 
     -ss before -i so ffmpeg seeks rather than decoding to the cut point, and
     -c copy because re-encoding an 80-minute lecture to remove a few minutes of
     black would cost more than every other CPU stage combined. The cut lands on
     the nearest keyframe, so the caller checks the achieved durations.
+
+    `exact` gives up that saving to get a frame-accurate cut: seek AFTER -i so
+    ffmpeg decodes and discards up to the cut point, and re-encode so the
+    output can start on a frame that was never a keyframe. Reserved for the
+    case where the cheap path missed the drift tolerance, because on a
+    Panopto screen capture -- 1920x1080 but only ~36 kB/s, because slides are
+    nearly static -- the re-encode is minutes, while doing the same to a
+    camera stream would not be.
     """
+    if not exact:
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error",
+             "-ss", f"{seconds:.3f}", "-i", src_path,
+             "-c", "copy", "-avoid_negative_ts", "make_zero", out_path],
+            check=True)
+        return out_path
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error",
-         "-ss", f"{seconds:.3f}", "-i", src_path,
-         "-c", "copy", "-avoid_negative_ts", "make_zero", out_path],
+         "-i", src_path, "-ss", f"{seconds:.3f}",
+         "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+         "-pix_fmt", "yuv420p", "-c:a", "copy",
+         "-avoid_negative_ts", "make_zero", out_path],
         check=True)
     return out_path
 
@@ -125,7 +142,8 @@ def _trim(src_path, out_path, seconds):
 def align_screen_to_camera(camera_path, screen_path, out_screen_path,
                            out_camera_path=None, min_offset=0.5,
                            trim_black=True, scan_seconds=900.0,
-                           max_black_trim=600.0, drift_tolerance=1.5):
+                           max_black_trim=600.0, drift_tolerance=1.5,
+                           exact_retry=False):
     """Trim both streams to a shared start. Returns (screen_out, camera_out).
 
     camera_out is the original camera path when no black trim was needed.
@@ -197,13 +215,33 @@ def align_screen_to_camera(camera_path, screen_path, out_screen_path,
     drift = abs(got_screen - got_camera)
     print(f"[sync] screen {got_screen:.1f}s, camera {got_camera:.1f}s "
           f"(drift {drift:.2f}s)")
+
+    # The stream-copy cut landed too far off. Rather than refuse the lecture,
+    # redo the SCREEN trim frame-accurately and re-check. Only the screen: it
+    # is the stream that was trimmed to match, it is cheap to re-encode, and
+    # leaving the camera untouched keeps the audio -- and therefore every
+    # transcript, card and caption timing -- bit-identical to the source.
+    if drift > drift_tolerance and exact_retry and screen_trim > min_offset:
+        print(f"[sync] retrying the screen trim frame-accurately "
+              f"(re-encode); -c copy rounded to a keyframe and missed by "
+              f"{drift:.2f}s")
+        screen_out = _trim(screen_path, out_screen_path, screen_trim,
+                           exact=True)
+        got_screen = get_duration(screen_out)
+        drift = abs(got_screen - got_camera)
+        print(f"[sync] screen {got_screen:.1f}s, camera {got_camera:.1f}s "
+              f"(drift {drift:.2f}s after exact trim)")
+
     if drift > drift_tolerance:
         raise SystemExit(
             f"[sync] screen and camera are {drift:.2f}s apart after trimming "
             f"(tolerance {drift_tolerance}s).\n"
             f"-c copy cut each at its nearest keyframe and they rounded "
             f"differently. Publishing this would put the slides out of step "
-            f"with the instructor for the whole lecture.")
+            f"with the instructor for the whole lecture."
+            + ("" if exact_retry else
+               "\nTry --exact-trim, which re-cuts the screen frame-accurately "
+               "at the cost of a re-encode."))
     return screen_out, camera_out
 
 
@@ -218,6 +256,10 @@ def main():
     parser.add_argument("--max-black-trim", type=float, default=600.0,
                         help="Refuse to cut more leading black than this "
                              "(default: 600)")
+    parser.add_argument("--exact-trim", action="store_true",
+                        help="If the stream-copy cut misses the drift "
+                             "tolerance, re-cut the screen frame-accurately "
+                             "(re-encodes it; minutes on a slide capture)")
     args = parser.parse_args()
     p = LecturePaths(args.lecture_dir)
 
@@ -229,6 +271,7 @@ def main():
         trim_black=not args.keep_black,
         scan_seconds=args.black_scan_seconds,
         max_black_trim=args.max_black_trim,
+        exact_retry=args.exact_trim,
     )
     print(f"[sync] screen aligned -> {screen_out}")
     if camera_out != p.camera:
