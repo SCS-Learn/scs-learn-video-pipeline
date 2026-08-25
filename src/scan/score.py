@@ -69,12 +69,17 @@ def _check_gates(metrics, probe_info):
 
     cam = probe_info.get("camera")
     scr = probe_info.get("screen")
-    gate("media_readable",
-         None if cam is None else bool(cam and cam.get("has_video")),
-         "camera did not decode" if not cam else "ok")
-    gate("has_audio",
-         None if cam is None else bool(cam.get("has_audio")),
-         "camera has no audio stream" if cam and not cam.get("has_audio") else "ok")
+    # Not "None means unmeasured" here, unlike the gates below. A camera that
+    # is absent or will not probe IS the finding -- the probe tier always
+    # looks, so there is no third state. Treating it as unmeasured let a
+    # lecture whose download had failed come back as a provisional 100.0 with
+    # no camera at all, which is precisely the kind of confident-looking
+    # nonsense the gates exist to stop.
+    gate("media_readable", bool(cam and cam.get("has_video")),
+         "camera missing or will not decode" if not cam else "ok")
+    gate("has_audio", bool(cam and cam.get("has_audio")),
+         "camera missing or has no audio stream"
+         if not (cam and cam.get("has_audio")) else "ok")
 
     dur = (cam or {}).get("duration") or metrics.get("duration_s")
     gate("duration_sane",

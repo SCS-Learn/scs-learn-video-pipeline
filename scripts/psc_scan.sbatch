@@ -134,9 +134,29 @@ REPORT_DIR="${REPORT_DIR:-$CORPUS_DIR/_reports}"
 mkdir -p "$CORPUS_DIR" "$REPORT_DIR"
 
 module load anaconda3 2>/dev/null || true
-source activate scs-learn        # the audio env: ffmpeg, numpy, pillow. The
-                                 # vision tier borrows face_anon's detector and
-                                 # will simply record a per-lecture error if
+# Which env, and why it is a knob rather than a constant.
+#
+# The scanner's tiers straddle this repo's deliberate env split: probe, signal
+# and speech need numpy and ffmpeg (scs-learn), while the vision tier borrows
+# face_anon's insightface detector (scs-video). Do NOT resolve that by
+# installing insightface into scs-learn -- it drags in the CPU onnxruntime,
+# which shadows onnxruntime-gpu and silently drops face_anon to ~25x slower.
+#
+# Run two passes instead. Measurements are cached per tier in each lecture's
+# scan.json, so the second pass re-uses the first's work and only adds what is
+# missing:
+#
+#   CONDA_ENV=scs-learn TIER=signal   # download + audio/video signal
+#   CONDA_ENV=scs-video TIER=vision   # faces only; signal comes from cache
+#
+# That ordering matters for grading, not just tidiness: signal alone covers
+# only ~44% of the rubric, which is under the 55% floor score.py requires
+# before it will award a grade at all, so a signal-only sweep comes back
+# entirely ungraded. Adding the vision tier clears it.
+CONDA_ENV="${CONDA_ENV:-scs-learn}"
+source activate "$CONDA_ENV"     # the audio env by default: ffmpeg, numpy.
+                                 # The vision tier borrows face_anon's detector
+                                 # and will simply record a per-lecture error if
                                  # insightface is absent here, which is the
                                  # right outcome -- scs-video's onnxruntime-gpu
                                  # cannot share an env with this one.

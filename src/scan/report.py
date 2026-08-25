@@ -163,6 +163,45 @@ def weakest_dimension(r):
     return dim, got["score"]
 
 
+def _graded(results):
+    """Only the lectures that actually got a score.
+
+    score.py leaves `score` None when it refused to grade one -- nothing
+    measured, or coverage under its floor -- and every mean, best and worst on
+    the page runs over these. Folding an ungraded lecture in as a zero would
+    report a scan that did not finish as a lecturer who did badly.
+    """
+    return [r for r in results if r.get("score") is not None]
+
+
+def _mean_score(results):
+    return _mean([_score(r) for r in _graded(results)])
+
+
+def _mean_potential(results):
+    return _mean([_potential(r) for r in _graded(results)])
+
+
+def _cells(r):
+    """(score, potential, gain) as they should print for one lecture.
+
+    An ungraded lecture gets dashes rather than 0.0. It still occupies a row
+    -- it is work somebody has to do something about -- but printing a zero
+    would rank a failed scan against lectures that were actually measured.
+    """
+    if r.get("score") is None:
+        return "--", "--", "--"
+    return _pts(_score(r)), _pts(_potential(r)), _pts(_gain(r))
+
+
+def _best_worst(results):
+    """(best, worst) by score among graded lectures, or (None, None)."""
+    graded = _graded(results)
+    if not graded:
+        return None, None
+    return max(graded, key=_score), min(graded, key=_score)
+
+
 def _verdict_order(results):
     """The rubric's verdicts, plus any the scorer added on top of them.
 
@@ -235,17 +274,6 @@ def _fmt_raw(mid, value):
     return str(value)
 
 
-def _measured_metrics(r):
-    """Rubric metrics this lecture actually has, in rubric table order.
-
-    `metrics` also carries context values that are not in the rubric (they are
-    printed for a human, not scored), so the table order is the filter as well
-    as the sort.
-    """
-    metrics = r.get("metrics") or {}
-    return [mid for mid in METRICS if metrics.get(mid) is not None]
-
-
 def _group(results, field):
     """Group results by a possibly-missing identity field, in first-seen
     order so that a report over a semester reads in the order it was scanned
@@ -271,6 +299,14 @@ def _ranked(results):
 
 def _md_cell(text):
     return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def _md_bw(entry):
+    """A best/worst cell. A course whose every lecture failed to scan has
+    neither, and a dash says so without inventing a winner."""
+    if not entry:
+        return "--"
+    return f"`{_md_cell(_key(entry))}` {_pts(_score(entry))}"
 
 
 def render_markdown(results, limit=None):
@@ -302,8 +338,8 @@ def render_markdown(results, limit=None):
         f"across {len(results)} recordings")
     add("- **Verdicts:** " + ", ".join(
         f"{counts.get(v, 0)} {v}" for v in order))
-    mean = _mean([_score(r) for r in results])
-    mean_pot = _mean([_potential(r) for r in results])
+    mean = _mean_score(results)
+    mean_pot = _mean_potential(results)
     add(f"- **Mean score:** {_pts(mean)} "
         f"(potential {_pts(mean_pot)})")
     if scanned and scanned[-1]:
@@ -330,10 +366,11 @@ def render_markdown(results, limit=None):
         weak = weakest_dimension(r)
         weak_txt = (f"{_dim_label(weak[0])} ({_num(weak[1] * 100, 0)})"
                     if weak else "not measured")
+        score_c, pot_c, _ = _cells(r)
         add(f"| {i} | `{_md_cell(_key(r))}` "
             f"| {_md_cell(r.get('course') or UNKNOWN)} "
-            f"| {_grade(r)} | {_pts(_score(r))} "
-            f"| {_pts(_potential(r))} | {_md_cell(weak_txt)} |")
+            f"| {_grade(r)} | {score_c} "
+            f"| {pot_c} | {_md_cell(weak_txt)} |")
     add("")
 
     # --- by course -------------------------------------------------------
@@ -343,13 +380,11 @@ def render_markdown(results, limit=None):
     add("|---|---:|---:|---|---|")
     for course, group in sorted(
             _group(results, "course").items(),
-            key=lambda kv: -(_mean([_score(r) for r in kv[1]]) or 0.0)):
-        best = max(group, key=_score)
-        worst = min(group, key=_score)
+            key=lambda kv: -(_mean_score(kv[1]) or 0.0)):
+        best, worst = _best_worst(group)
         add(f"| {_md_cell(course)} | {len(group)} "
-            f"| {_pts(_mean([_score(r) for r in group]))} "
-            f"| `{_md_cell(_key(best))}` {_pts(_score(best))} "
-            f"| `{_md_cell(_key(worst))}` {_pts(_score(worst))} |")
+            f"| {_pts(_mean_score(group))} "
+            f"| {_md_bw(best)} | {_md_bw(worst)} |")
     add("")
 
     # --- by instructor ---------------------------------------------------
@@ -366,13 +401,11 @@ def render_markdown(results, limit=None):
     add("|---|---:|---:|---|---|")
     for owner, group in sorted(
             _group(results, "owner").items(),
-            key=lambda kv: -(_mean([_score(r) for r in kv[1]]) or 0.0)):
-        best = max(group, key=_score)
-        worst = min(group, key=_score)
+            key=lambda kv: -(_mean_score(kv[1]) or 0.0)):
+        best, worst = _best_worst(group)
         add(f"| {_md_cell(owner)} | {len(group)} "
-            f"| {_pts(_mean([_score(r) for r in group]))} "
-            f"| `{_md_cell(_key(best))}` {_pts(_score(best))} "
-            f"| `{_md_cell(_key(worst))}` {_pts(_score(worst))} |")
+            f"| {_pts(_mean_score(group))} "
+            f"| {_md_bw(best)} | {_md_bw(worst)} |")
     add("")
 
     # --- needs attention -------------------------------------------------
@@ -458,11 +491,14 @@ def render_csv(results):
             r.get("course") or "",
             r.get("title") or "",
             r.get("owner") or "",
-            _num(r.get("duration_s") or 0.0, 1),
+            _num(r["duration_s"], 1) if r.get("duration_s") else "",
             r.get("scanned_at") or "",
             " ".join(r.get("tiers_run") or []),
-            _pts(_score(r)),
-            _pts(_potential(r)),
+            # Blank, not 0.0, for an ungraded lecture: same reason the metric
+            # columns leave a missing measurement empty.
+            _pts(r.get("score")) if r.get("score") is not None else "",
+            _pts(r.get("potential"))
+            if r.get("potential") is not None else "",
             _grade(r),
             _verdict(r),
             "; ".join(r.get("gates_failed") or []),
@@ -688,8 +724,8 @@ def _html_card(r):
     add(f'<p class="sub">{meta}</p>')
     if r.get("title"):
         add(f'<p class="sub">{_esc(r["title"])}</p>')
-    add(f'<p class="sub">score <strong>{_pts(_score(r))}</strong> '
-        f'&rarr; potential <strong>{_pts(_potential(r))}</strong> '
+    add(f'<p class="sub">score <strong>{_cells(r)[0]}</strong> '
+        f'&rarr; potential <strong>{_cells(r)[1]}</strong> '
         f'&middot; {_esc(_verdict(r))}</p>')
 
     for dim, meta_d in DIMENSIONS.items():
@@ -771,10 +807,10 @@ def render_html(results):
         add(f'<div class="stat"><div class="k">{_esc(v)}</div>'
             f'<div class="v">{counts.get(v, 0)}</div></div>')
     add('<div class="stat"><div class="k">mean score</div>'
-        f'<div class="v">{_pts(_mean([_score(r) for r in results]))}'
+        f'<div class="v">{_pts(_mean_score(results))}'
         "</div></div>")
     add('<div class="stat"><div class="k">mean potential</div>'
-        f'<div class="v">{_pts(_mean([_potential(r) for r in results]))}'
+        f'<div class="v">{_pts(_mean_potential(results))}'
         "</div></div>")
     add("</div>")
 
@@ -792,15 +828,16 @@ def render_html(results):
         weak = weakest_dimension(r)
         weak_txt = (f"{_dim_label(weak[0])} ({_num(weak[1] * 100, 0)})"
                     if weak else "not measured")
+        score_c, pot_c, gain_c = _cells(r)
         add("<tr>"
             f'<td class="num">{i}</td>'
             f'<td class="mono">{_esc(_key(r))}</td>'
             f"<td>{_esc(r.get('course') or UNKNOWN)}</td>"
             f"<td>{_esc(r.get('owner') or UNKNOWN)}</td>"
             f"<td>{_chip(_grade(r))}</td>"
-            f'<td class="num">{_pts(_score(r))}</td>'
-            f'<td class="num">{_pts(_potential(r))}</td>'
-            f'<td class="num">{_pts(_gain(r))}</td>'
+            f'<td class="num">{score_c}</td>'
+            f'<td class="num">{pot_c}</td>'
+            f'<td class="num">{gain_c}</td>'
             f'<td class="wide">{_esc(weak_txt)}</td>'
             f"<td>{_esc(_verdict(r))}</td></tr>")
     add("</tbody></table></div>")
@@ -816,17 +853,17 @@ def render_html(results):
         "</tr></thead><tbody>")
     for owner, group in sorted(
             _group(results, "owner").items(),
-            key=lambda kv: -(_mean([_score(r) for r in kv[1]]) or 0.0)):
-        best = max(group, key=_score)
-        worst = min(group, key=_score)
+            key=lambda kv: -(_mean_score(kv[1]) or 0.0)):
+        best, worst = _best_worst(group)
         add(f"<tr><td>{_esc(owner)}</td>"
             f'<td class="num">{len(group)}</td>'
             f'<td class="num">'
-            f"{_pts(_mean([_score(r) for r in group]))}</td>"
+            f"{_pts(_mean_score(group))}</td>"
             f'<td class="num">'
-            f"{_pts(_mean([_potential(r) for r in group]))}</td>"
-            f'<td class="mono">{_esc(_key(best))}</td>'
-            f'<td class="mono">{_esc(_key(worst))}</td></tr>')
+            f"{_pts(_mean_potential(group))}</td>"
+            f'<td class="mono">{_esc(_key(best) if best else "--")}</td>'
+            f'<td class="mono">{_esc(_key(worst) if worst else "--")}</td>'
+            "</tr>")
     add("</tbody></table></div>")
     add('<p class="note">Measured delivery, not teaching: room acoustics and '
         "microphone luck land in these numbers too.</p>")
@@ -884,8 +921,8 @@ def render_lecture(result, width=78):
     add(f"  scanned    {r.get('scanned_at') or UNKNOWN}"
         f"   tiers: {', '.join(r.get('tiers_run') or []) or 'none'}")
     add("")
-    add(f"  GRADE {_grade(r)}   score {_pts(_score(r))}"
-        f"   potential {_pts(_potential(r))}"
+    add(f"  GRADE {_grade(r)}   score {_cells(r)[0]}"
+        f"   potential {_cells(r)[1]}"
         f"   verdict {_verdict(r)}")
     blurb = next((b for t, letter, _v, b in GRADES if letter == _grade(r)
                   and _score(r) >= t), None)

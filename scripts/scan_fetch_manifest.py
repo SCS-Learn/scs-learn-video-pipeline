@@ -125,7 +125,15 @@ def fetch_stream(stream, lecture_dir):
     # Download to .part so an interrupted job -- walltime, node failure, a
     # cancelled scancel -- can never leave a half file that looks finished to
     # the next run's skip check.
-    part = final + ".part"
+    # The suffix goes BEFORE the extension: "camera.part.mp4", not
+    # "camera.mp4.part". An HLS stream is fetched by ffmpeg, and ffmpeg picks
+    # its output muxer from the filename extension -- handed a ".part" it
+    # cannot infer a format and exits immediately having written nothing.
+    # curl has no such opinion, so the bug hid completely: every direct-mp4
+    # lecture downloaded fine and every HLS one failed in about a second with
+    # 0 bytes. That is 7 of the 47 lectures in this corpus.
+    stem, ext = os.path.splitext(final)
+    part = f"{stem}.part{ext or '.mp4'}"
     if os.path.exists(part):
         os.remove(part)
 
