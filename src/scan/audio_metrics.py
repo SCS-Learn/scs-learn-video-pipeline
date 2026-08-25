@@ -9,7 +9,9 @@ delivery is -- are not things astats reports in a usable form.
 On astats specifically: its "Noise floor dB" reads -86 dBFS on 15-210 lecture
 12, which is the quietest sample in the file, not the room tone anyone hears.
 The floor that matters is the level the signal sits at between words, and that
-is a percentile of short-frame energy, computed below.
+is a percentile of short-frame energy -- except on a recording whose pauses
+carry no signal at all, where the honest answer is that there is no floor to
+find. `_noise_floor` tells those two apart and explains why.
 
 The prosody pair is the interesting part. `pitch_variety_st` is the closest
 thing to an objective handle on "is this lecturer engaging": the standard
@@ -37,11 +39,24 @@ F0_MIN_HZ, F0_MAX_HZ = 70.0, 350.0
 F0_VOICED_R = 0.35          # autocorrelation peak height that counts as voiced
 F0_MAX_FRAMES = 30000       # cap the work; 10 minutes of voiced speech is plenty
 
-# Anything under this is the digital silence of an unstarted recording, not
-# room tone, and including it drags every percentile down.
+# Anything under this is digital silence rather than room tone. Two entirely
+# different things produce it and they want opposite treatment, which is what
+# _noise_floor sorts out.
 DIGITAL_SILENCE_DB = -75.0
+# Where in the frame-energy distribution the room tone is looked for, on a
+# recording that has one.
+FLOOR_PCT = 10.0
 # How far above the floor a frame must sit to count as speech.
 VAD_MARGIN_DB = 8.0
+
+# Gate detection. A noise gate, squelch or denoiser fires in every pause, so
+# the silence it leaves recurs all through the lecture in short runs; a
+# microphone that was switched on late leaves one contiguous block instead.
+# Both look identical to a percentile and need opposite handling, so the shape
+# of the silence is what separates them.
+GATE_SILENCE_PCT = 2.0          # share of frames sitting at digital silence
+GATE_RUNS_PER_MIN = 1.0         # ...and it has to recur, not be one block
+GATE_MIN_RUNS = 5
 
 # A word whose audio sits this close to the room-tone floor was not actually
 # captured. Used by speech_metrics, which has the word timings.
@@ -71,6 +86,63 @@ def _runs(mask):
         ends.append(mask.size)
     for s, e in zip(starts, ends):
         yield s, e
+
+
+def _noise_floor(db, frame_s):
+    """(floor_dbfs, gated) -- the level the hiss sits at between the words.
+
+    The metric this feeds asks one question: how much noise sits under the
+    speech. The module docstring records why astats' own answer was rejected
+    -- it reports the quietest sample in the file, -86 dBFS on 15-210 lecture
+    12, which is nobody's room tone -- and why a percentile of short-frame
+    energy replaced it.
+
+    That replacement had a hole in it. Taking the percentile over only the
+    frames above DIGITAL_SILENCE_DB assumes the frames below it are an
+    unstarted recording. On a recording whose pauses have been gated,
+    squelched or denoised to true digital silence, the frames below it are the
+    pauses -- every one of them -- so the 10th percentile of what is left is
+    SPEECH, and `snr_db` stops being speech-to-noise and becomes the dynamic
+    range of the speech. Measured on 600 s of lecture 12 with a downward gate
+    applied to the pauses only, the speech samples bit-identical between runs:
+    a -25.5 dBFS gate moved the floor from -47.3 to -28.8 dBFS and SNR from
+    21.9 to 11.4 dB. Cleaning a recording scored it four points worse.
+
+    The honest answer for that recording is the opposite one. If the pauses
+    are digitally silent there is no hiss between the words at all, so the
+    floor is at or below DIGITAL_SILENCE_DB and the SNR is excellent. That
+    ceiling is what gets reported -- not the -120 dBFS the log clamp would
+    give, which would claim a precision nothing here has.
+
+    So the gated case is detected rather than the threshold tuned, because the
+    threshold is not the problem: a gate destroys the information a percentile
+    would need, and no percentile can be placed to recover it. Detection is on
+    the SHAPE of the silence, not its quantity. A gate acts in every pause, so
+    its silence is scattered across the lecture in short runs -- 85 runs a
+    minute at -41.5 dBFS, 164 at -25.5. A microphone that was off for the
+    first ninety seconds leaves exactly one run, and the room tone in the rest
+    of the file is real and must still be measured. Ninety seconds of dead mic
+    and a gate both put ~16% of frames at digital silence, so the count alone
+    cannot tell them apart.
+
+    What this cannot see: a gate only acts in the pauses, so noise sitting
+    UNDER the speech survives it and no level statistic can find it. A gated
+    recording therefore scores its SNR on the pauses alone, which is the best
+    that can be said from frame energy. `noise_floor_gated` is reported next
+    to the figure so a reader knows which of the two was measured.
+    """
+    silent = db <= DIGITAL_SILENCE_DB
+    audible = db[~silent]
+    if audible.size < 10:
+        # Nothing but silence: not a gate, a recording that never started.
+        return DIGITAL_SILENCE_DB, False
+
+    minutes = db.size * frame_s / 60.0
+    n_runs = sum(1 for _ in _runs(silent))
+    scattered = n_runs >= max(GATE_MIN_RUNS, GATE_RUNS_PER_MIN * minutes)
+    if silent.mean() * 100.0 >= GATE_SILENCE_PCT and scattered:
+        return DIGITAL_SILENCE_DB, True
+    return float(np.percentile(audible, FLOOR_PCT)), False
 
 
 def _estimate_f0(x, speech_mask_frames):
@@ -170,10 +242,17 @@ def measure(pcm, loudness, duration_s):
         m["speech_pct"] = 0.0
         return m, levels
 
-    floor_db = float(np.percentile(audible, 10.0))
+    floor_db, gated = _noise_floor(db, frame_s)
+    # The VAD threshold rides the floor, so it is fixed by the same decision.
+    # On a gated recording that lands it just above digital silence, which is
+    # the right rule there: if the pauses were zeroed, anything audible at all
+    # is speech. It also repairs speech_pct, which the old floor moved from
+    # 75.3% to 21.6% on the same 600 s of lecture 12 -- and speech_pct feeds
+    # score.py's not_silent gate, so a cleaned-up lecture could fail it.
     vad = db > (floor_db + VAD_MARGIN_DB)
     speech_db = db[vad]
     m["noise_floor_dbfs"] = floor_db
+    m["noise_floor_gated"] = gated
     m["snr_db"] = float(np.median(speech_db) - floor_db) if speech_db.size else 0.0
     m["speech_pct"] = float(vad.mean() * 100.0)
     m["speech_seconds"] = float(vad.sum() * frame_s)

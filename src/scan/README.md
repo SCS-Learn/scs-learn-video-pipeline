@@ -16,9 +16,14 @@ python -m src.scan --courses-dir data/fall2026 --tier speech \
 
 # one lecture, every metric
 python -m src.scan --lecture-dir data/15210-lecture12 --explain
+
+# the bands say everything here is an A: re-fit them to this cohort
+python -m src.scan --courses-dir data/spring2026 --recalibrate [--apply]
 ```
 
-Everything runs on a laptop. Nothing here needs a GPU or PSC.
+Everything runs on a laptop and nothing here needs a GPU. A whole semester
+can also be downloaded and scanned on PSC instead, so the media never crosses a
+home connection — `scripts/psc_scan_README.md`.
 
 ---
 
@@ -116,6 +121,56 @@ class). **Two lectures is not a calibration set.** That is exactly why the
 scanner also reports each metric's percentile *within the scanned cohort* —
 over a real semester, trust the percentile before the absolute band.
 
+The first real semester proved the point. Over 47 Spring 2026 lectures (28 in
+15-210, 19 in 17-635) the graded scores ran 76–97 and 28 of them came back A —
+most of the cohort inside eight points. A grader that gives everything an A has
+measured nothing, however carefully each individual metric was measured.
+
+### `--recalibrate`, `--apply`, `--absolute`
+
+```bash
+python -m src.scan --courses-dir data/spring2026 --recalibrate          # propose
+python -m src.scan --courses-dir data/spring2026 --recalibrate --apply  # write it
+python -m src.scan --courses-dir data/spring2026 --absolute             # ignore it
+```
+
+`--recalibrate` scans as usual, then reports which metrics are **saturated**
+(80%+ of lectures at full marks) or **floored**, and proposes new band edges
+fitted to the observed p10–p90 — the ends, not min–max, so one broken recording
+cannot define the whole scale. It changes nothing on its own. Three guards
+matter, and `recalibrate.py`'s docstring explains why each exists:
+
+- A metric needs 12+ measurements, and real spread against its **own** band,
+  before it is fitted. `clipped_pct` reading 0.0 everywhere is good news about
+  the corpus, not a broken threshold.
+- Every fit is held to a floor: a value the absolute rubric calls perfect keeps
+  at least half marks under the fitted scale. Cohort fitting may re-order
+  lectures; it may not fail one for being a 65-minute lecture in a corpus of
+  75-minute ones.
+- The proposal is validated by re-scoring the cohort under it and printing the
+  before/after spread and grade histogram. A fit that does not widen the spread
+  has not earned its keep, and the report says so.
+
+`--apply` writes `rubric_overrides.json` next to `rubric.py`, which
+`rubric.load_overrides()` picks up on every later run and announces. It is a
+separate file rather than an edit to the table on purpose: **delete the file to
+go back to the absolute bands.** `--absolute` ignores it for one run without
+deleting anything.
+
+**The trade-off, because it is easy to forget:** recalibrated scores are
+*relative*. "97" stops meaning "good" and starts meaning "near the top of this
+cohort", and a semester of uniformly poor recordings still yields an A, because
+something has to be at the top. The absolute bands in `rubric.py` are a
+judgement about what a watchable lecture is; a fitted band is a judgement about
+what a typical lecture *here* is. Keep both, and use them for different
+questions:
+
+    absolute      should this be published at all
+    recalibrated  what should be published first
+
+The override file records the `cohort_size` it was fitted on. Re-fit per
+semester rather than carrying one file forward across years.
+
 Several numbers were moved during development because the measurement was
 wrong, and those corrections are recorded in each metric's `why`:
 
@@ -149,6 +204,7 @@ instructor splitting into exactly three clusters.
 | `speech_metrics.py` | transcript: pacing, structure, interaction, PII flag |
 | `lexicon.py` | filler / signpost / admin / name-stoplist word lists |
 | `score.py` | measurements → dimensions → grade, gates, remediation |
+| `recalibrate.py` | re-fit the bands to a real cohort; `--recalibrate` / `--apply` |
 | `report.py` | markdown, CSV, HTML, per-lecture detail, cohort percentiles |
 | `discover.py` | find lectures, pick the raw camera/screen streams |
 | `scanner.py` | run the tiers for one lecture, cache the measurements |

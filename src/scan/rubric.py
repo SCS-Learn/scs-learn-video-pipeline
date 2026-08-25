@@ -44,6 +44,9 @@ percentile WITHIN the scanned cohort -- see `cohort` in report.py. On a real
 semester, trust the percentile before you trust the absolute band.
 """
 
+import json
+import os
+
 # How the five dimensions weigh against one another. Sums to 1.0.
 #
 # audio is the heaviest because it is the failure a viewer will not sit
@@ -348,7 +351,10 @@ METRICS = {
                "projector that was off, and nothing downstream removes it.",
     },
     "screen_aspect": {
-        "dimension": "visual", "weight": 1.0, "tier": "probe", "fixable": True,
+        # Produced by video_metrics.measure_screen, which is the signal tier.
+        # Filed under "probe" until a probe-only scan listed "probe" among the
+        # tiers it still had to run.
+        "dimension": "visual", "weight": 1.0, "tier": "signal", "fixable": True,
         "label": "Screen aspect fit", "unit": "score",
         "scale": ramp(0.0, 1.0),
         "why": "1.0 for 16:9 content, ~0.6 for a 4:3 deck pillarboxed into a "
@@ -601,6 +607,44 @@ GRADES = [
     (0.0,  "F", "skip",
      "Not worth the pipeline hours unless it is re-recorded."),
 ]
+
+
+def load_overrides(path=None, quiet=False):
+    """Replace metric bands from a calibration file, if one exists.
+
+    Written by src/scan/recalibrate.py after fitting the bands to a real
+    cohort. Kept as a separate file, never an edit to the table above, because
+    the two answer different questions: METRICS says what a watchable lecture
+    is in absolute terms, and an override says what a typical lecture in one
+    particular semester is. Deleting the file restores the absolute rubric.
+
+    Returns the number of metrics overridden.
+    """
+    path = path or os.environ.get("SCAN_RUBRIC_OVERRIDES") or _OVERRIDES_PATH
+    if not path or not os.path.exists(path):
+        return 0
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[rubric] ignoring unreadable overrides {path}: {e}")
+        return 0
+    scales = (doc or {}).get("scales") or {}
+    n = 0
+    for mid, scale in scales.items():
+        if mid not in METRICS or not isinstance(scale, list) or not scale:
+            continue
+        METRICS[mid] = dict(METRICS[mid], scale=tuple(scale))
+        n += 1
+    if n and not quiet:
+        print(f"[rubric] {n} band(s) recalibrated from {os.path.basename(path)} "
+              f"(cohort of {doc.get('cohort_size', '?')}). Scores are relative "
+              f"to that cohort, not absolute.")
+    return n
+
+
+_OVERRIDES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "rubric_overrides.json")
 
 
 def score_metric(metric_id, value):

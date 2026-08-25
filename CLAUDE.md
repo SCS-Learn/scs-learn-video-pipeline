@@ -58,10 +58,10 @@ Getting this wrong wastes hours.
 
 | Where | What runs there |
 |---|---|
-| **Your laptop** | `ingestion.py` (needs a real browser), `panopto_download.py`, `cards.py`, all editing, CPU testing |
+| **Your laptop** | `ingestion.py` (needs a real browser), `panopto_download.py`, `cards.py`, `src/scan` (no GPU), all editing, CPU testing |
 | **PSC login node** | `ls`, `squeue`, `sacct`, `sinfo`, `module avail`, `pip list`. **Nothing else.** |
 | **PSC DTN** (`data.bridges2.psc.edu`) | all file transfers |
-| **PSC compute** (`sbatch`/`interact`) | `transcription.py`, `face_anon.py`, `track_instructor.py` |
+| **PSC compute** (`sbatch`/`interact`) | `transcription.py`, `face_anon.py`, `track_instructor.py`, and `src/scan` over a whole semester (`RM-shared`, CPU) |
 
 ### Login node policy — do not violate
 
@@ -115,10 +115,102 @@ different final videos depending on whether someone remembered to run it.
 enforces this — it refuses to run `cards` when it detects it is on PSC. Run the
 pipeline on your laptop, or `--skip cards` there and do it locally.
 
+`src/scan` is **not** in that table and never will be: it grades lectures
+rather than producing anything a later stage consumes. See "The lecture
+scanner", below, for deciding which lectures to run this on in the first place.
+
 Submit GPU stages with:
 ```bash
 ./scripts/psc.sh sbatch scripts/psc_face_anon.sbatch
 ```
+
+---
+
+## The lecture scanner
+
+`src/scan` grades a semester of downloaded lectures so they can be triaged
+before anyone spends pipeline hours on them. It reads lectures and writes
+`scan.json` plus reports; it never modifies a lecture and nothing downstream
+consumes it. **It runs on a laptop and needs no GPU** — the vision tier borrows
+face_anon's detector through CoreML.
+
+```bash
+python -m src.scan --explain-rubric          # every threshold, with its justification
+python -m src.scan --courses-dir data/spring2026 --tier signal --jobs 6
+python -m src.scan --lecture-dir data/15210-lecture12 --explain
+```
+
+Four tiers, cumulative and cached per lecture in `scan.json`, so deepening a
+scan re-runs only what is new. Costs are per lecture, measured on 79-90
+minute lectures on an M5 laptop:
+
+| Tier | Cost | Adds |
+|---|---|---|
+| `probe` | ~1 s | ffprobe, `metadata.json`, `chapters.json` |
+| `signal` | ~40 s | loudness, SNR, prosody, slide changes, black lead, exposure |
+| `vision` | ~15 s | instructor presence and size, student faces |
+| `speech` | ~0.3 s | everything from `transcript_classified.json` |
+
+The intended workflow is to sweep the corpus at `--tier signal`, read the
+ranking, and spend the deeper tiers only on the lectures still in contention.
+`speech` never runs ASR — transcription is a GPU stage and scanning a semester
+is not a reason to spend it — so a lecture with no transcript reports lower
+coverage rather than a lower score.
+
+Five dimensions, weighted against each other: audio 28%, delivery and
+engagement 22%, student exposure and burden 20%, visual 17%, content and
+structure 13%. Every threshold and weight lives in `rubric.py` as a data table,
+and `--explain-rubric` prints all of it with the sentence justifying each
+number; retuning the grader is editing that table, not the measurement code.
+
+Two numbers come out. `score` is the lecture as recorded; `potential` is the
+same lecture after the remediation this pipeline can actually apply (loudnorm,
+afftdn, letterboxing, cutting dead air). The gap is the useful part: 52 → 78 is
+quiet and hissy and worth publishing, 52 → 54 is a monotone talk over a dead
+slide and no encoder setting fixes that.
+
+**Hard gates are separate from the score**, because "how good is it" and
+"publish it at all" are different questions and averaging them answers neither
+— unreadable media, no audio, silence, absurd runtime, untranscribable speech,
+no instructor in shot, unalignable streams. A failed gate means skip whatever
+the score is. A gate whose measurement is absent is skipped, not failed.
+
+An unmeasured metric is likewise not a zero: dimensions renormalise over what
+was measured and report `coverage`. Below 55% coverage a lecture gets a
+provisional score and **no grade** — a probe-only pass over this corpus scored
+93.8 from three metrics, and a number that confident that early is worse than
+no number. `signal` alone is ~44%, so a signal-only sweep comes back entirely
+ungraded; adding `vision` clears the floor.
+
+### Scanning a semester on PSC
+
+`scripts/psc_scan.sbatch` downloads the lectures from CloudFront **on PSC** and
+scans them there on `RM-shared`, so a semester of media never comes down a home
+connection and never lands on the laptop. The manifest's URLs are pre-signed,
+so there is no credential on the node; the only things worth pulling back are
+`scan.json` and `_reports/`.
+
+```bash
+./scripts/psc.sh sync                        # code only
+scp manifest.15210.json psc-dtn:/ocean/projects/cis260220p/$PSC_USER/manifests/
+./scripts/psc.sh sbatch scripts/psc_scan.sbatch \
+  '--export=ALL,MANIFEST=/ocean/projects/cis260220p/$USER/manifests/manifest.15210.json,CORPUS_DIR=/ocean/projects/cis260220p/$USER/corpus/15-210,TIER=signal,LIMIT=3'
+```
+
+`psc.sh sync` excludes `manifest*.json`, so the manifest needs its own scp over
+the DTN — without it the job dies at `ERROR: no manifest at ...`. Keep the
+single quotes on `--export`: `psc.sh` passes it through unexpanded, so `$USER`
+resolves to your PSC username rather than your Mac's. Start with a small
+`LIMIT`; the second run re-downloads nothing and re-measures nothing.
+
+The vision tier needs a **second pass in the other env**: `CONDA_ENV=scs-video
+TIER=vision`. insightface lives in `scs-video` while the signal tier's ffmpeg
+and numpy live in `scs-learn`, and installing insightface into `scs-learn`
+would drag in the CPU `onnxruntime` that shadows `onnxruntime-gpu` for
+`face_anon`. Tiers are cached per lecture, so the second pass re-uses the
+first's work and only adds the faces. `scripts/psc_scan_README.md` has the rest
+— the env vars, and the rsync `--include`/`--exclude` ordering that stops you
+dragging the mp4s home with the reports.
 
 ---
 
@@ -198,10 +290,80 @@ having no black at all. Scan far enough, too: `-t 400` on lecture 12 reports the
 black ending at 400s because that is where the scan stopped, not where the black
 did. `sync.py` warns when a run is still going at the edge of its window.
 
+**`-c copy` trims round to the nearest keyframe, and two streams round
+differently.** `sync.py` cuts the black lead off the screen and the camera
+independently and each lands on its own nearest keyframe, so on a 2.4s GOP the
+two can end up a GOP apart. 17-635 Recitation 4 came out **1.77s** adrift
+against the 1.5s tolerance — a whole-lecture lip-sync error dressed up as a
+rounding detail. `sync.py --exact-trim` re-cuts the **screen only**,
+frame-accurately (`-ss` after `-i`, plus a re-encode), and re-checks. Screen
+only, for two reasons: a Panopto screen capture is 1920x1080 but only ~36 kB/s
+because slides barely move, so that re-encode costs minutes where the same on a
+camera stream would not; and leaving the camera untouched keeps its audio
+bit-identical, which every transcript, card and caption timing depends on.
+Without `--exact-trim`, sync refuses the lecture rather than publishing it
+adrift.
+
 **Don't reintroduce ffmpeg `overlay` in `cards.py`.** The card template is a
 fully opaque 1920x1080 PNG and the screen is exactly 1920x1080, so a card
 *replaces* the frame — nothing to composite. The old approach opened one
 full-length looped image input per question, costing O(questions × duration).
+
+**Dead air measured on the waveform is wrong.** An RMS gate loose enough to
+call a lecture hall silent found 1 gap over 5s in a 79-minute lecture where the
+transcript found 9 — between sentences a room full of people is not quiet. The
+scanner's `dead_air_pct` is transcript-derived, which makes it a speech-tier
+metric and simply unmeasured on a lecture with no transcript. That is the
+honest answer; 0% would not be.
+
+**A level-based mic-dropout detector reported 476 dropouts an hour on a clean
+recording.** On level alone, the gap between two ordinary words is
+indistinguishable from a radio pack cutting out. Two metrics replaced it:
+per-minute level stability (`level_stability_db`, signal tier — the reference
+lectures sit at 1.7 and 0.9 dB) and, where a transcript exists, the share of
+words whose audio sits at the room-tone floor (`dropped_word_pct`, 0.6% on both
+clean lectures). Both need a real fault to move.
+
+**Counting question-final sentences gave ~160 questions an hour** on both
+reference lectures, because three quarters of them were "…, right?" — the
+metric was measuring the word "right". Tag questions are now counted as the
+filler they are — and they carry that metric, because Whisper strips most um
+and uh before anything can count them, so a filler rate built on those alone
+measures the ASR rather than the speaker. The real question rate is 83 and 53
+an hour.
+
+**Panopto HLS downloads fail silently as `rc=234` with 0 bytes** when the
+destination filename has no video extension. `panopto_download.download_stream`
+fetches HLS with ffmpeg, and ffmpeg picks its output muxer from the extension:
+handed `camera.mp4.part` it cannot infer a format and exits in about a second
+having written nothing. curl, which fetches the direct-mp4 case, has no such
+opinion, so the bug hid completely — every progressive lecture downloaded fine
+and every HLS one failed. That was **7 of the 47 lectures** in the Spring 2026
+corpus. Stage downloads as `name.part.mp4`, never `name.mp4.part`.
+
+**Scan workers oversubscribe cores unless you divide them explicitly.**
+onnxruntime and BLAS both size their thread pools from the *visible* core
+count, so 8 scan workers on a 32-core node ask for 8x32 threads and spend the
+difference context-switching: the vision tier ran five minutes without
+finishing a single lecture. `psc_scan.sbatch` exports `OMP_NUM_THREADS` and its
+three siblings as cores/JOBS. The same arithmetic is why `--jobs` defaults to a
+third of the core count — ffmpeg is already ~6.6x self-parallel (one screen
+decode: 26s wall against 172s of CPU), so a job per core makes a scan slower,
+not faster.
+
+**A grader calibrated on 2 lectures gives everything an A.** The scanner's
+bands were set against the two lectures this repo has taken end to end, and
+`rubric.py` says so. Over the 47 real Spring 2026 lectures the graded scores
+ran 76-97 and 28 of them came back A — a grader that grades everything A has
+measured nothing, however carefully each individual metric was measured.
+`--recalibrate` re-fits each band to the cohort's own p10-p90, re-scores the
+cohort under the fit to check the spread actually widened, and prints a
+proposal; `--apply` writes `rubric_overrides.json`, and deleting that file
+restores the absolute table. What it trades away is the thing to remember:
+**recalibrated scores are relative.** A semester of uniformly poor recordings
+still produces an A, because something has to be at the top. Use absolute
+scores to decide whether to publish at all, and recalibrated ones to decide
+what to publish first; `--absolute` ignores the override file for one run.
 
 **HuggingFace gating.** `transcription.py` pins
 `pyannote/speaker-diarization-3.1`. Accept its conditions **and** those of
@@ -249,6 +411,10 @@ real during development.
 | Student questions are audible, or the instructor is muted, and everything is off by a constant | A stage read `camera.mp4` while the transcript was built against `camera_sync.mp4` (or vice versa) | Use `paths.resolve_camera()`. Delete a stale `camera_sync.mp4` if sync says it needed no trim. |
 | Two runs over the same lecture produce different final videos; the PiP is zoomed in one and wide in the other | `assembly` prefers `camera_muted_anon_tracked.mp4` whenever it exists, so the result depended on whether `track_instructor` had been run | It is a pipeline stage now, so it runs by default. `assembly` logs `pip source=` on every run. Use `--skip track_instructor` (or `assembly --no-tracked`) to choose the wide shot deliberately. |
 | Instructor is blurred and students are clear | Wrong cluster chosen as instructor | `face_anon --preview` → inspect `face_clusters.png` → `--instructor-cluster <id>` |
+| `[fetch] ... FAILED rc=234 got 0B` on some lectures and not others | The HLS fetch was pointed at a filename ending `.part`; ffmpeg picks its muxer from the extension and cannot infer one | Stage as `name.part.mp4`, not `name.mp4.part`. curl-fetched direct mp4s are unaffected, which is why only some lectures fail |
+| `[sync] screen and camera are 1.77s apart after trimming` | `-c copy` rounded each trim to its own nearest keyframe, and on a 2.4s GOP they rounded differently | `python -m src.sync --lecture-dir <dir> --exact-trim`. It re-cuts the screen frame-accurately; the camera's audio stays bit-identical |
+| A scan crawls — the vision tier runs minutes without finishing one lecture | onnxruntime and BLAS size their thread pools from the visible core count, so every worker asks for every core | Divide them: `OMP_NUM_THREADS=$((CORES/JOBS))`, likewise `OPENBLAS_`/`MKL_`/`NUMEXPR_`. `psc_scan.sbatch` does this |
+| Every lecture in the semester grades A | Bands calibrated against two lectures, and the whole cohort sits above them | `python -m src.scan ... --recalibrate` (then `--apply`). The result is RELATIVE to that cohort — keep absolute scores for "publish at all" |
 | cards takes tens of minutes and thrashes memory | Old ffmpeg `overlay` chain, O(questions × duration) | Should be cut-render-concat. Check `cards.py` has not been reverted. |
 
 ## Agent operating rules

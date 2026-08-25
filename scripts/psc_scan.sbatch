@@ -296,11 +296,23 @@ t0=$SECONDS
 # samples. At 80 that is still one frame every ~67s across 90 minutes, and on
 # a CPU-only node (onnxruntime falling back off the GPU) it is the difference
 # between a semester taking half an hour and taking two.
+# FORCE_TIER re-measures one tier while keeping the rest of the cache. For
+# when a tier's code changed: re-running the whole sweep would spend hours
+# recomputing numbers that were never wrong, and --force does exactly that.
+FORCE_ARGS=()
+if [ -n "${FORCE_TIER:-}" ]; then
+    for t in ${FORCE_TIER//,/ }; do
+        FORCE_ARGS+=(--force-tier "$t")
+    done
+    echo "re-measuring tier(s): $FORCE_TIER (rest of the cache kept)"
+fi
+
 python -m src.scan \
     --courses-dir "$CORPUS_DIR" \
     --tier "$TIER" \
     --jobs "$JOBS" \
     --vision-frames "${VISION_FRAMES:-200}" \
+    "${FORCE_ARGS[@]}" \
     --out "$REPORT_DIR" \
     --format md,csv,html,json
 echo "<<< [2/2] scan finished in $((SECONDS - t0))s"

@@ -55,6 +55,12 @@ def main(argv=None):
                         f"ffmpeg is already threaded, so more is often slower)")
     p.add_argument("--force", action="store_true",
                    help="Re-measure everything, ignoring cached scan.json")
+    p.add_argument("--force-tier", action="append", default=[],
+                   choices=rubric.TIERS,
+                   help="Re-measure just this tier, keeping the rest of the "
+                        "cache. Repeatable. For when one tier's code changed "
+                        "and re-running the others would cost hours for "
+                        "identical numbers.")
     p.add_argument("--vision-frames", type=int, default=200,
                    help="Frames to run face detection on per lecture")
     p.add_argument("--out", help="Directory to write reports into")
@@ -65,8 +71,24 @@ def main(argv=None):
                    help="Print the full per-metric breakdown for each lecture")
     p.add_argument("--explain-rubric", action="store_true",
                    help="Print the grading rubric and exit")
+    p.add_argument("--recalibrate", action="store_true",
+                   help="After scanning, re-fit the bands to this cohort and "
+                        "print the proposal (does not change anything)")
+    p.add_argument("--apply", action="store_true",
+                   help="With --recalibrate, write rubric_overrides.json so "
+                        "later runs use the fitted bands")
+    p.add_argument("--absolute", action="store_true",
+                   help="Ignore any rubric_overrides.json and grade against "
+                        "the absolute bands in rubric.py")
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
+
+    # Overrides load before anything is scored. --absolute is the escape
+    # hatch: recalibrated scores answer "best of this cohort", the absolute
+    # table answers "watchable at all", and conflating them silently is how a
+    # semester of poor recordings gets published on the strength of an A.
+    if not args.absolute:
+        rubric.load_overrides(quiet=args.quiet)
 
     if args.explain_rubric:
         print(rubric.explain())
@@ -84,7 +106,8 @@ def main(argv=None):
               f"jobs={args.jobs}", flush=True)
 
     payload = [(d, args.tier, args.force, args.vision_frames,
-                not args.quiet and len(dirs) <= 4) for d in dirs]
+                not args.quiet and len(dirs) <= 4,
+                tuple(args.force_tier)) for d in dirs]
     results = []
     if args.jobs <= 1 or len(dirs) == 1:
         for item in payload:
@@ -116,6 +139,24 @@ def main(argv=None):
         for r in results:
             print()
             print(report.render_lecture(r))
+
+    if args.recalibrate:
+        from src.scan import recalibrate
+        proposals = recalibrate.propose(results)
+        print()
+        print(recalibrate.render(results, proposals))
+        if args.apply and proposals:
+            # The number of lectures actually FITTED, not the number scanned.
+            # Gate failures are excluded from the fit -- a lecture with no
+            # camera would otherwise shift the percentiles that every good
+            # lecture is then graded against -- so recording the scanned count
+            # in the override file would overstate what it was calibrated on.
+            fitted = len(recalibrate._fittable(results))
+            path = recalibrate.apply(proposals, cohort_size=fitted)
+            print(f"\n[scan] wrote {path} -- re-run to grade against it, or "
+                  f"pass --absolute to ignore it")
+        elif args.apply:
+            print("\n[scan] nothing to apply")
 
     text = report.render_markdown(results, limit=args.limit)
     print()

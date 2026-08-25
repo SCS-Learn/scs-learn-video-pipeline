@@ -153,8 +153,23 @@ def _weighted_total(dims):
     return (num / den * 100.0) if den else None
 
 
-def _remediation(metrics, base_subscores):
-    """What each fixable metric is worth, in points of the final score."""
+def _remediation(metrics, base_subscores, base_score):
+    """What each fixable metric is worth, in points of the final score.
+
+    The gain is MEASURED -- re-score the lecture with that one metric
+    remediated and take the difference -- rather than derived from the
+    weights by hand. An earlier version did the arithmetic itself, dividing
+    by the dimension's full weight and multiplying by the dimension's share,
+    and that only matches the real total at full coverage: `_dimension_scores`
+    normalises by the weights actually MEASURED and `_weighted_total`
+    renormalises again over the dimensions that have any measurement.
+
+    On a probe+signal scan the two disagreed badly. The report printed a
+    headline gap of +14.7 points and then itemised gains summing to 7.5
+    directly beneath it -- on precisely the cheap first-pass scans the tier
+    system exists to encourage. Re-scoring costs a few dozen dictionary
+    passes and cannot drift from the grader, because it IS the grader.
+    """
     out = []
     for mid, spec in rubric.METRICS.items():
         if not spec["fixable"] or mid not in rubric.REMEDIATED:
@@ -163,13 +178,15 @@ def _remediation(metrics, base_subscores):
         if value is None:
             continue
         now = base_subscores.get(mid)
-        then = rubric.score_metric(mid, rubric.remediated_value(mid, value))
+        fixed = rubric.remediated_value(mid, value)
+        then = rubric.score_metric(mid, fixed)
         if now is None or then is None or then <= now + 1e-6:
             continue
-        dim = spec["dimension"]
-        dim_w = sum(rubric.METRICS[i]["weight"] for i in rubric.dimension_ids(dim))
-        gain = ((then - now) * spec["weight"] / dim_w
-                * rubric.DIMENSIONS[dim]["weight"] * 100.0)
+        _, dims_one = _dimension_scores(dict(metrics, **{mid: fixed}),
+                                        remediate=False)
+        gain = (_weighted_total(dims_one) or 0.0) - (base_score or 0.0)
+        if gain <= 1e-6:
+            continue
         out.append({
             "metric": mid,
             "label": spec["label"],
@@ -252,7 +269,7 @@ def evaluate(metrics, probe_info, identity=None, tiers_run=(), warnings=(),
         "coverage": coverage,
         "gates_failed": gates_failed,
         "gate_detail": gate_detail,
-        "remediation": _remediation(metrics, subscores),
+        "remediation": _remediation(metrics, subscores, score),
         "dimensions_measured": measured,
         "warnings": list(warnings),
         "errors": list(errors),

@@ -41,10 +41,45 @@ BLACK_STD_MAX = 6.0
 # single lit frame partway through a ten-minute dark lead does not end it.
 BLACK_LEAD_PURITY = 0.90
 
+# ...but the lead must also be LEADING, and purity alone cannot enforce that:
+# a cumulative mean dips below 90% when the lecture starts and climbs back
+# above it if the screen goes dark again later, which put the lead of a
+# synthetic 4.5-minute black tail at the whole file. The lead therefore ends,
+# permanently, at the first stretch of light this long. Lecture 12's dark lead
+# is interrupted by exactly one keyframe of light at 131.8s (measured on
+# data/15210-lecture12/screen.mp4), so the window has to be several keyframes
+# wide: 12s is five of them on Panopto's 2.4s GOP grid, and no lecture opens
+# with less than twelve seconds of picture and then goes dark for minutes.
+SUSTAINED_LIT_S = 12.0
+
 # A pixel counts as part of the slide's content box if it is lit in at least
 # this fraction of frames. Excludes permanent pillarbox bars while tolerating
 # the dark lead-in and the occasional dark slide.
 LIT_FRACTION = 0.15
+
+# How far above the video's black point a pixel has to sit to count as lit.
+# BLACK_MEAN_MAX is a FRAME mean and reading it as a per-pixel threshold --
+# which the content box used to do -- says "part of the slide" means "bright",
+# so a dark-theme deck contributes only its text: a full-frame 16:9 deck on a
+# value-8 background measured 2.50 where the truth is 1.78, i.e. read as more
+# broken than a genuine 4:3 pillarbox.
+#
+# The threshold is relative to the black point rather than absolute because
+# ffmpeg's `format=gray` does NOT range-convert (verified: a limited-range
+# source with luma 16 decodes to 16, not 0), so black is 0 on one lecture and
+# 16 on the next and a fixed number cannot serve both. Those two are the only
+# black points a video file has, so the level is snapped to whichever it is
+# near rather than taken literally -- a dark grey at 8 is not a black point in
+# either convention, it is a design choice, and it belongs to the slide.
+#
+# Temporal variation was the other candidate and does NOT work here: on
+# 17-635 lecture 13 the pillarbox bars are not static at all -- the capture
+# goes full-width for about 9% of its frames -- so bar pixels change 45 times
+# over the lecture and any "it moved, so it is content" rule swallows the
+# bars and loses the very case this measurement exists for.
+BLACK_POINTS = (0.0, 16.0)
+BLACK_POINT_TOL = 4.0
+PIXEL_LIT_DELTA = 6.0
 
 # Mean absolute inter-frame difference, 0-255, above which the slide changed.
 # Calibrated on the two reference lectures: their inter-keyframe difference
@@ -73,6 +108,74 @@ def _laplacian_var(frame):
     return float(lap.var())
 
 
+def _black_point(pixel_min):
+    """The level THIS file codes black at, from its darkest pixels.
+
+    A video has exactly two black points: 0 if it is tagged full range, 16 if
+    limited, and ffmpeg's gray output preserves whichever it is rather than
+    normalising (measured). So the darkest thing in the file is snapped to the
+    nearer of the two, and anything that sits between them -- a deck whose
+    background is a dark grey rather than black -- is content, not black, and
+    correctly leaves the black point at 0.
+
+    Taken as a low percentile of the per-pixel minimum rather than the outright
+    minimum, so one undershooting pixel of compression noise cannot decide it.
+    """
+    ref = float(np.percentile(pixel_min, 1))
+    return 16.0 if abs(ref - 16.0) <= BLACK_POINT_TOL else 0.0
+
+
+def _leading_black(black, step):
+    """How many frames of black the file OPENS with. Never more.
+
+    This is the quantity sync.py has to remove, so both directions of error
+    are expensive, and both have been made:
+
+    * Stopping at the first non-black frame underestimates it. Lecture 12's
+      screen is dark for 629s but flickers once at 131.8s, and that rule put
+      the lead at 132s -- five minutes of black published under a check that
+      said the trim covered it.
+    * Trusting the 90% purity rule alone overestimates it, without bound. The
+      cumulative mean of the black mask is not monotonic: it falls when the
+      lecture starts and rises again wherever the screen goes dark later, so
+      the last index satisfying it can land anywhere in the file. On a
+      synthetic screen that is black for its last 4.5 minutes the "lead" came
+      out as the entire file, which would have reported a sync deficit of
+      about a thousand seconds against a real one of none.
+
+    The fix is to bound the search first and apply purity second: the lead
+    cannot extend past the first sustained stretch of light, where sustained
+    is SUSTAINED_LIT_S -- long enough that lecture 12's one-keyframe flicker
+    does not end it, short enough that no real lecture opening is missed. The
+    window is also capped at a quarter of the file so a short clip (a test
+    fixture, a five-minute recitation) still terminates somewhere sensible.
+    """
+    n = int(black.size)
+    if n == 0 or not black[0]:
+        return 0
+    lit = ~black
+    span = max(2, int(round(SUSTAINED_LIT_S / step))) if step > 0 else 2
+    span = max(2, min(span, max(2, n // 4)))
+    end = n
+    if span <= n:
+        runs = np.convolve(lit.astype(np.int32),
+                           np.ones(span, np.int32), mode="valid")
+        starts = np.flatnonzero(runs == span)
+        if starts.size:
+            end = int(starts[0])
+    head = np.flatnonzero(black[:end])
+    if not head.size:
+        return 0
+    lead = int(head[-1]) + 1
+
+    # Purity, now applied only inside the leading region. A lead that is
+    # mostly light -- a screen that strobes on and off for ten minutes -- is
+    # not a black lead, and the trim must not be told that it is.
+    cum = np.cumsum(black[:lead]) / np.arange(1, lead + 1)
+    ok = np.flatnonzero((cum >= BLACK_LEAD_PURITY) & black[:lead])
+    return int(ok[-1]) + 1 if ok.size else 0
+
+
 def measure_screen(path, duration_s):
     """Slide-track metrics: how often it changes, how dark, what shape."""
     m = {}
@@ -82,15 +185,24 @@ def measure_screen(path, duration_s):
     # pillarbox bar is black in every frame; a single full-width flash would
     # defeat a max-over-time union, and did -- 17-635 lecture 13's 4:3 deck
     # measured as a clean 16:9 until this became a frequency count.
-    lit_count = None
+    #
+    # Counted against both candidate black points, because which one applies
+    # is only known once the whole file has been seen and this is a single
+    # streaming pass. Two 160x90 counters is a rounding error next to holding
+    # the frames.
+    lit_counts = {bp: None for bp in BLACK_POINTS}
+    pixel_min = None
     for _, f in iter_frames(path, SCREEN_W, SCREEN_H):
         fl = f.astype(np.float32)
         means.append(float(fl.mean()))
         stds.append(float(fl.std()))
         if prev is not None:
             diffs.append(float(np.mean(np.abs(fl - prev))))
-        lit = (fl > BLACK_MEAN_MAX)
-        lit_count = lit.astype(np.int32) if lit_count is None else lit_count + lit
+        pixel_min = fl if pixel_min is None else np.minimum(pixel_min, fl)
+        for bp in BLACK_POINTS:
+            lit = fl > (bp + PIXEL_LIT_DELTA)
+            lit_counts[bp] = (lit.astype(np.int32) if lit_counts[bp] is None
+                              else lit_counts[bp] + lit)
         prev = fl
     n = len(means)
     if n < 2:
@@ -105,21 +217,10 @@ def measure_screen(path, duration_s):
 
     black = (means <= BLACK_MEAN_MAX) & (stds <= BLACK_STD_MAX)
     m["screen_black_pct"] = float(black.mean() * 100.0)
-    # The leading black -- the run sync.py is trying to remove -- is not
-    # simply "frames until the first non-black one". Lecture 12's screen is
-    # dark for 629s but flickers once at 132s, and taking the first non-black
-    # frame put the lead at 132s: a five-minute underestimate of exactly the
-    # quantity that decides whether the published video opens on black.
-    # Instead: the furthest point up to which the frames are still 90% black.
-    lead = 0
-    if black.any() and black[0]:
-        cum = np.cumsum(black) / np.arange(1, n + 1)
-        # Anchored on an actually-black frame. Purity alone is not enough: it
-        # tolerates 10% non-black by construction, so it keeps walking past
-        # the end of the dark lead into the lecture and reported 697s where
-        # the whole file only holds 628s of black.
-        mostly = np.flatnonzero((cum >= BLACK_LEAD_PURITY) & black)
-        lead = int(mostly[-1]) + 1 if mostly.size else 0
+    # The leading black -- the run sync.py is trying to remove. See
+    # _leading_black for why it is neither "up to the first lit frame" nor
+    # "as far as the purity rule reaches".
+    lead = _leading_black(black, step)
     m["black_lead_s"] = float(lead * step)
 
     changes = diffs > SLIDE_CHANGE_DIFF
@@ -132,18 +233,31 @@ def measure_screen(path, duration_s):
     # not a slide that nobody advanced.
     idx = np.flatnonzero(changes)
     idx = idx[idx >= lead]
-    if idx.size:
+    if lead >= n - 1:
+        # Nothing survives the lead, so there is no slide track to measure and
+        # the subtraction below would report 0.0 -- a perfect score for a
+        # screen that never showed anything. Report the whole sampled span:
+        # a wholly black screen is the worst dead slide there is, not the
+        # absence of one.
+        m["longest_static_slide_s"] = float(n * step)
+    elif idx.size:
         gaps = np.diff(np.concatenate(([lead], idx, [n - 1])))
         m["longest_static_slide_s"] = float(gaps.max() * step)
     else:
         m["longest_static_slide_s"] = float((n - lead) * step)
 
-    # Content box, from the pixels that are ever lit. A 4:3 deck pillarboxed
-    # into a 16:9 frame leaves permanent black bars, and layout._slide_filter
-    # letterboxes it rather than cropping -- correctly, but the slide then uses
-    # about three quarters of the window, so it is worth scoring. 17-635
-    # lecture 13 is exactly this case (crop=1440:1080:240:0).
-    if lit_count is not None:
+    # Content box, from the pixels that carry slide rather than surround. A
+    # 4:3 deck pillarboxed into a 16:9 frame leaves permanent black bars, and
+    # layout._slide_filter letterboxes it rather than cropping -- correctly,
+    # but the slide then uses about three quarters of the window, so it is
+    # worth scoring. 17-635 lecture 13 is exactly this case
+    # (crop=1440:1080:240:0).
+    #
+    # "Carries slide" is "sits above the video's own black point", not "is
+    # bright": the distinction is what keeps a dark-theme deck from measuring
+    # as a sliver of text. See BLACK_POINTS.
+    if pixel_min is not None:
+        lit_count = lit_counts[_black_point(pixel_min)]
         often = lit_count >= (n * LIT_FRACTION)
         lit_cols = np.flatnonzero(often.any(axis=0))
         lit_rows = np.flatnonzero(often.any(axis=1))

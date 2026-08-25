@@ -21,6 +21,15 @@ The ordering is not arbitrary. Everything a later tier needs from an earlier
 one is passed forward in memory -- the speech tier asks the signal tier's
 frame-level analysis whether there was audio where a word is supposed to be --
 so no file is ever decoded twice in a run.
+
+The catch is that "in memory" only exists while the earlier tier RUNS, and the
+cache exists precisely so that it often does not. Deepening a scan therefore
+has to be able to rebuild the handful of things a later tier needs from an
+earlier one, or the cached path quietly measures less than the fresh path
+while both report the same `tiers_run`. See MIN_TIMED_WORDS_FOR_LEVELS below
+for the one case where that bites, what it cost, and what re-deriving it
+costs instead. The invariant being defended is that the same lecture at the
+same --tier is the same metrics however many runs it took to get there.
 """
 
 import datetime
@@ -32,6 +41,37 @@ from src.scan import (audio_metrics, discover, face_metrics, media, rubric,
                       score, speech_metrics, video_metrics)
 
 CACHE_NAME = "scan.json"
+
+# Enough timed words for speech_metrics to report dropped_word_pct at all: it
+# wants more than 100 measurable words before it will divide by them, and
+# below that the metric does not exist whatever we do.
+#
+# It is the one speech-tier metric that needs the signal tier's frame-level
+# audio analysis (`levels`), and `levels` only exists when the signal tier
+# actually ran in THIS process. Served from cache it was None, the metric
+# vanished, and `tiers_run` still read [probe, signal, vision, speech] -- so
+# the two ways of reaching the same tier disagreed and neither said so.
+# Measured on a 300s clip of 15-210 lecture 12: a single `--tier speech` gave
+# dropped_word_pct=1.235 at coverage 0.852, while `--tier signal` then
+# `--tier speech` gave None at coverage 0.827 -- the same lecture, the same
+# tier, two different answers and a score that moved with them. The workflow
+# that produces the second is the one src/scan/__main__.py recommends, and
+# data/15210-lecture12/scan.json already shipped in exactly that state.
+#
+# Three ways out, and re-deriving `levels` is the only one that restores the
+# invariant. Caching `levels` means putting a float32 array on a 100 Hz grid
+# -- 2.2 MB for a 90-minute lecture -- into scan.json, which is the one thing
+# the comment at the foot of scan_lecture exists to prevent, and a sidecar
+# .npy trades a silent disagreement for a second cache to keep coherent.
+# Recording the skip makes the dishonesty visible in `coverage` but leaves the
+# two paths measuring different things, which is the bug restated rather than
+# fixed. So: re-decode, at a cost of one audio pass (~21s on a 79-minute
+# lecture, against the ~40s the whole signal tier costs), paid ONLY on the
+# cached-signal path and only when there is a transcript with enough timed
+# words for the metric to exist. Both conditions are checked below and the
+# decision is logged, because a silent 21 seconds per lecture across a
+# semester sweep is its own kind of surprise.
+MIN_TIMED_WORDS_FOR_LEVELS = 100
 
 # Per-worker detector, built once per process and reused across lectures.
 # insightface costs a few seconds to construct, which is real money when a pool
@@ -49,7 +89,7 @@ def scan_one(args):
     BrokenProcessPool rather than anything that names the real problem.
     """
     global _APP
-    lecture_dir, tier, force, vision_frames, verbose = args
+    lecture_dir, tier, force, vision_frames, verbose, force_tiers = args
     needs_vision = (rubric.TIERS.index(tier)
                     >= rubric.TIERS.index("vision"))
     if needs_vision and _APP is None:
@@ -59,6 +99,7 @@ def scan_one(args):
         except Exception:                                       # noqa: BLE001
             _APP = None         # scan_lecture records the failure per lecture
     return scan_lecture(lecture_dir, tier=tier, force=force, app=_APP,
+                        force_tiers=force_tiers,
                         vision_frames=vision_frames, verbose=verbose)
 
 
@@ -87,6 +128,60 @@ def _save_cache(lecture_dir, payload):
         pass            # a read-only corpus is not a reason to fail the scan
 
 
+def _timed_word_count(segments):
+    """Words dropped_word_pct could be measured over, roughly.
+
+    Mirrors speech_metrics.measure's word walk closely enough to answer "is
+    that metric going to exist", which is all it is for -- it decides whether
+    an audio decode is worth 21 seconds, not what the metric turns out to be.
+    The segment-level fallback is counted too, because speech_metrics
+    fabricates a word per token from the segment's own timings when a segment
+    carries no word list, and those are measurable in exactly the same way.
+    """
+    n = 0
+    for s in segments:
+        ws = s.get("words") or []
+        if ws:
+            n += sum(1 for w in ws
+                     if w.get("word") and "start" in w and "end" in w
+                     and w["end"] > w["start"])
+        elif s.get("end", 0) > s.get("start", 0):
+            n += len((s.get("text") or "").split())
+    return n
+
+
+def _rederive_levels(cam_path, duration, note, warnings):
+    """Rebuild the signal tier's frame-level audio analysis, or None.
+
+    Only ever called when the signal tier came from cache and the speech tier
+    is about to need `levels` -- see MIN_TIMED_WORDS_FOR_LEVELS for why this
+    re-decode is preferable to caching the array or to letting the metric
+    quietly disappear. A failure here is a warning rather than an error: the
+    speech tier still measures everything else, and the point of the warning
+    is that this scan's coverage is then genuinely below what a single-run
+    scan of the same lecture would report, which is worth saying out loud
+    rather than leaving to be inferred from a missing key.
+    """
+    note("re-deriving audio levels: the signal tier came from cache and "
+         "dropped_word_pct needs its frame analysis (~21s)")
+    try:
+        pcm, loudness = media.decode_audio(cam_path)
+        # The metrics half is discarded on purpose. It is a deterministic
+        # function of this same PCM, so it is already in `metrics` from the
+        # cached run, identical; re-writing it would only create a way for a
+        # cached scan and a fresh one to disagree if audio_metrics ever
+        # changed underneath a cache.
+        _, levels = audio_metrics.measure(pcm, loudness, duration)
+        del pcm
+        return levels
+    except Exception as e:                                      # noqa: BLE001
+        warnings.append(
+            f"could not re-derive the audio levels dropped_word_pct needs "
+            f"({e}); this scan measures less than a single-pass scan of the "
+            f"same lecture would")
+        return None
+
+
 def _est_pipeline_hours(cam, scr):
     """Rough wall-clock for a full local pipeline pass on this lecture.
 
@@ -106,13 +201,20 @@ def _est_pipeline_hours(cam, scr):
 
 
 def scan_lecture(lecture_dir, tier="speech", force=False, app=None,
+                 force_tiers=(),
                  vision_frames=face_metrics.SAMPLE_FRAMES, verbose=False):
     """Measure and grade one lecture. Never raises -- errors land in the result."""
     want = _tier_index(tier)
     warnings, errors = [], []
     cache = {} if force else _load_cache(lecture_dir)
     metrics = dict(cache.get("metrics") or {})
-    done = set(cache.get("tiers_run") or [])
+    # Dropping a tier from `done` is all it takes to re-measure just that one:
+    # every tier below already guards on `not in done`. This exists because a
+    # bug fix in one tier's code should not cost hours re-running the tiers
+    # whose numbers were never wrong -- re-measuring the vision tier over a
+    # semester is a couple of hours, and the signal tier's answers would come
+    # back byte-identical.
+    done = set(cache.get("tiers_run") or []) - set(force_tiers or ())
     ran = set(done)
 
     identity = discover.lecture_identity(lecture_dir)
@@ -213,6 +315,12 @@ def scan_lecture(lecture_dir, tier="speech", force=False, app=None,
                     _note("transcript")
                     segs = speech_metrics.load_transcript(tpath)
                     if segs:
+                        if levels is None and cam and cam_path and \
+                                _timed_word_count(segs) > \
+                                MIN_TIMED_WORDS_FOR_LEVELS:
+                            levels = _rederive_levels(
+                                cam_path, cam.get("duration") or 0.0,
+                                _note, warnings)
                         metrics.update(speech_metrics.measure(
                             segs, (cam or {}).get("duration") or 0.0, levels))
                         ran.add("speech")
