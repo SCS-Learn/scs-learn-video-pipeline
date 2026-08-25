@@ -101,6 +101,45 @@ CORPUS_DIR="${CORPUS_DIR:-}"
 TIER="${TIER:-signal}"
 JOBS="${JOBS:-6}"
 DL_JOBS="${DL_JOBS:-4}"
+
+# Divide the cores between the scan workers rather than letting each one grab
+# all of them. onnxruntime and BLAS both size their thread pools from the
+# visible core count, so JOBS=8 insightface sessions on a 32-core allocation
+# ask for 8x32 threads and spend the difference context-switching. ffmpeg has
+# the same habit but is bounded by -threads internally.
+#
+# Left unset this is not a small effect: it is the difference between the
+# vision tier taking minutes per lecture and taking tens of minutes.
+_CORES="${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-8}}"
+_PER_JOB=$(( _CORES / JOBS ))
+[ "$_PER_JOB" -lt 1 ] && _PER_JOB=1
+export OMP_NUM_THREADS="$_PER_JOB"
+export OPENBLAS_NUM_THREADS="$_PER_JOB"
+export MKL_NUM_THREADS="$_PER_JOB"
+export NUMEXPR_NUM_THREADS="$_PER_JOB"
+
+# If a GPU was allocated -- submit with
+#   --partition=GPU-shared --gpus=l40s-48:1
+# -- make onnxruntime able to find its CUDA libraries. This is lifted from
+# psc_face_anon.sbatch and it is not optional: onnxruntime-gpu ships its CUDA
+# dependencies as nvidia-* pip packages under site-packages/nvidia/*/lib, a
+# path the dynamic loader never searches, so without it the provider fails to
+# load, onnxruntime falls back to CPU *silently*, and the job runs ~25x slower
+# while reporting itself healthy.
+#
+# NEVER ask for a v100 here. The vision tier is face_anon's detector, and
+# onnxruntime-gpu's cuDNN has no sm_70 kernels -- it dies in about three
+# seconds with "err 209 no kernel image is available". l40s-48 or h100-80.
+if [ -n "${SLURM_JOB_GPUS:-${SLURM_GPUS_ON_NODE:-}}" ]; then
+    NVIDIA_LIBS=$(python -c "import glob,os,site;print(':'.join(sorted({p for d in site.getsitepackages() for p in glob.glob(os.path.join(d,'nvidia','*','lib'))})))" 2>/dev/null || true)
+    if [ -n "${NVIDIA_LIBS:-}" ]; then
+        export LD_LIBRARY_PATH="$NVIDIA_LIBS:${LD_LIBRARY_PATH:-}"
+        echo "LD_LIBRARY_PATH += env-local NVIDIA libs"
+    else
+        module load cuda/12.6.1 2>/dev/null && echo "loaded cuda/12.6.1 module"
+    fi
+    nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || true
+fi
 LIMIT="${LIMIT:-0}"
 
 cd "$REPO"
@@ -251,10 +290,17 @@ echo "<<< [1/2] download finished in $((SECONDS - t0))s"
 echo
 echo ">>> [2/2] scan tier=$TIER  $(date '+%F %T')"
 t0=$SECONDS
+# VISION_FRAMES trades vision-tier accuracy for wall clock. The metrics it
+# feeds are fractions over a whole lecture -- what share of frames hold the
+# instructor, what share hold a student -- so they converge long before 200
+# samples. At 80 that is still one frame every ~67s across 90 minutes, and on
+# a CPU-only node (onnxruntime falling back off the GPU) it is the difference
+# between a semester taking half an hour and taking two.
 python -m src.scan \
     --courses-dir "$CORPUS_DIR" \
     --tier "$TIER" \
     --jobs "$JOBS" \
+    --vision-frames "${VISION_FRAMES:-200}" \
     --out "$REPORT_DIR" \
     --format md,csv,html,json
 echo "<<< [2/2] scan finished in $((SECONDS - t0))s"

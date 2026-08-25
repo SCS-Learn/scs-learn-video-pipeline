@@ -142,6 +142,29 @@ def _key(r):
     return r.get("key") or r.get("dir") or UNKNOWN
 
 
+def _name(r):
+    """What to call a lecture in a table a human has to read.
+
+    The key is the directory basename, which for a Panopto download is
+    `<course>_<guid>` -- unique, stable, and completely unreadable forty rows
+    deep. The title from metadata.json is the thing that lets someone find the
+    lecture they were thinking of, so it leads, with the key kept alongside for
+    anyone matching a row back to a directory.
+    """
+    title = (r.get("title") or "").strip()
+    key = _key(r)
+    if not title:
+        return f"`{key}`"
+    if len(title) > TITLE_MAX:
+        title = title[:TITLE_MAX - 1].rstrip() + "…"
+    return f"{title}<br>`{key}`"
+
+
+# Long enough for "Lecture 21: Minimum Spanning Trees, Boruvka's Algorithm"
+# without letting one verbose title set the width of the whole table.
+TITLE_MAX = 58
+
+
 def _dims(r):
     return r.get("dimensions") or {}
 
@@ -367,7 +390,7 @@ def render_markdown(results, limit=None):
         weak_txt = (f"{_dim_label(weak[0])} ({_num(weak[1] * 100, 0)})"
                     if weak else "not measured")
         score_c, pot_c, _ = _cells(r)
-        add(f"| {i} | `{_md_cell(_key(r))}` "
+        add(f"| {i} | {_md_cell(_name(r))} "
             f"| {_md_cell(r.get('course') or UNKNOWN)} "
             f"| {_grade(r)} | {score_c} "
             f"| {pot_c} | {_md_cell(weak_txt)} |")
