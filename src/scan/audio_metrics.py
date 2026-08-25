@@ -124,8 +124,15 @@ def _estimate_f0(x, speech_mask_frames):
         # without it F0 quantises to the lag grid and fakes a low variance.
         lo = acf[np.arange(acf.shape[0]), np.maximum(lag - 1, 0)]
         hi = acf[np.arange(acf.shape[0]), np.minimum(lag + 1, lag_hi)]
-        denom = (lo - 2.0 * peak + hi)
-        shift = np.where(np.abs(denom) > 1e-9, 0.5 * (lo - hi) / denom, 0.0)
+        # np.where would evaluate the division for every frame including the
+        # flat ones it is meant to exclude, so a frame with no curvature still
+        # divides by zero and warns -- harmlessly, since the result is then
+        # discarded, but a scan of a semester printed it once per lecture.
+        # np.divide with `where` skips those elements outright.
+        denom = lo - 2.0 * peak + hi
+        shift = np.zeros_like(denom)
+        np.divide(0.5 * (lo - hi), denom, out=shift,
+                  where=np.abs(denom) > 1e-9)
         shift = np.clip(shift, -1.0, 1.0)
 
         f0 = SR / np.maximum(lag + shift, 1e-6)

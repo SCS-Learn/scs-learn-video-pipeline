@@ -105,7 +105,12 @@ def main(argv=None):
 
     results = [r for r in results if r]
     report.cohort_percentiles(results)
-    results.sort(key=lambda r: (-(r.get("score") or -1), r.get("key") or ""))
+    # Same order the report uses: a failed gate sinks whatever it scored. A
+    # lecture whose camera never downloaded still scores well on the two or
+    # three probe metrics that survive, and sorting on score alone floats it
+    # to the top of the list as if it were the pick of the semester.
+    results.sort(key=lambda r: (bool(r.get("gates_failed")),
+                                -(r.get("score") or -1), r.get("key") or ""))
 
     if args.explain:
         for r in results:
