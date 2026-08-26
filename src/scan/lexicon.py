@@ -133,6 +133,10 @@ python java javascript c c++ rust go haskell ocaml sql html css linux unix
 windows macos ios android google microsoft apple amazon openai anthropic
 github gitlab docker kubernetes aws azure numpy pytorch tensorflow pandas
 cmu carnegie mellon pittsburgh america american english european
+poland thailand india china japan germany france spain italy brazil mexico
+canada australia russia korea vietnam nigeria kenya egypt turkey greece
+europe asia africa london paris berlin tokyo beijing mumbai delhi
+
 gpt claude llm api url http https json xml csv pdf gpu cpu ram
 fibonacci newton euler gauss turing dijkstra huffman bayes markov nash
 boolean gaussian euclidean pythagorean cartesian
