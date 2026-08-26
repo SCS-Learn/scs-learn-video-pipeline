@@ -87,6 +87,7 @@ def list_semester_folders(semester, session):
         "accept": "application/json, text/javascript, */*; q=0.01",
     }
     out, seen = [], set()
+    raw_keys = None
     for page in range(MAX_PAGES):
         r = session.get(FOLDER_API, params={
             "parentId": "null", "folderSet": 1, "searchTerm": semester,
@@ -99,6 +100,8 @@ def list_semester_folders(semester, session):
             break
         if not folders:
             break
+        if raw_keys is None and folders:
+            raw_keys = sorted(folders[0].keys())
         fresh = 0
         for f in folders:
             fid = f.get("Id")
@@ -106,11 +109,34 @@ def list_semester_folders(semester, session):
                 continue
             seen.add(fid)
             fresh += 1
-            out.append((f.get("Name") or "?", fid,
-                        f.get("SessionCount") or f.get("Sessions") or 0))
+            out.append((f.get("Name") or "?", fid, _session_count(f)))
         if fresh == 0:
             break                    # the endpoint is repeating itself
+    list_semester_folders.last_keys = raw_keys or []
     return out
+
+
+# The recording count is not reliably present, and it is not reliably called
+# the same thing. The first version of this read "SessionCount" or "Sessions",
+# found neither, and every folder scored 0 -- so a --min-sessions of 1 dropped
+# all 35 folders the search had correctly found, and the script reported
+# "nothing to harvest" about a semester that was right there. Filtering on a
+# field nobody has verified is how a search silently returns nothing.
+#
+# So: try the plausible names, and when none of them are present return None
+# meaning UNKNOWN rather than 0 meaning empty. Unknown is never filtered out.
+_COUNT_KEYS = ("SessionCount", "Sessions", "NumberOfSessions", "SessionsCount",
+               "DeliveryCount", "ChildSessionCount", "TotalSessions")
+
+
+def _session_count(folder):
+    for k in _COUNT_KEYS:
+        v = folder.get(k)
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+    return None
 
 
 def course_from_folder(name, semester):
@@ -204,15 +230,23 @@ def _discover_and_harvest(args):
     print(f"\nsearching Panopto for folders matching {args.semester!r} ...",
           flush=True)
     folders = list_semester_folders(args.semester, session)
+    # An UNKNOWN count (None) is never filtered out -- see _session_count.
     keep = [(n, i, s) for n, i, s in folders
-            if (s or 0) >= args.min_sessions]
-    print(f"{len(folders)} folder(s) matched, {len(keep)} with at least "
-          f"{args.min_sessions} recording(s):\n")
-    for name, _fid, sessions in sorted(keep, key=lambda f: -(f[2] or 0)):
-        print(f"   {sessions:>4} recordings   {name}")
-    if len(keep) < len(folders):
-        print(f"\n   ({len(folders) - len(keep)} folder(s) below "
-              f"--min-sessions {args.min_sessions}, not listed)")
+            if s is None or s >= args.min_sessions]
+    dropped = len(folders) - len(keep)
+    print(f"{len(folders)} folder(s) matched"
+          + (f", {dropped} below --min-sessions {args.min_sessions}"
+             if dropped else "") + ":\n")
+    for name, _fid, sessions in sorted(
+            keep, key=lambda f: (-(f[2] if f[2] is not None else 1 << 30),
+                                 f[0])):
+        shown = f"{sessions:>4}" if sessions is not None else "   ?"
+        print(f"   {shown} recordings   {name}")
+    if any(s is None for _n, _i, s in keep):
+        keys = getattr(list_semester_folders, "last_keys", [])
+        print("\n   '?' means Panopto did not report a count for that folder.")
+        if keys:
+            print(f"   (fields it did return: {', '.join(keys)})")
     if not keep:
         print("\nNothing to harvest. Check the semester string -- Panopto "
               "matches the folder TITLE, e.g. 'Spring 2026'.")
@@ -256,9 +290,10 @@ def main():
     p.add_argument("--list-only", action="store_true",
                    help="With --all-courses: print what WOULD be harvested "
                         "and stop. Run this first.")
-    p.add_argument("--min-sessions", type=int, default=1,
+    p.add_argument("--min-sessions", type=int, default=0,
                    help="With --all-courses, skip folders holding fewer "
-                        "recordings than this (default 1)")
+                        "recordings than this. Default 0 -- a folder whose "
+                        "count Panopto does not report is never filtered.")
     p.add_argument("--login-timeout", type=float, default=LOGIN_TIMEOUT,
                    help="Seconds to wait for SSO + Duo")
     args = p.parse_args()
