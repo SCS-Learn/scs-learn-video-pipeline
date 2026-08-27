@@ -69,10 +69,26 @@ _ASSETS = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
 THEME = os.environ.get("CARD_THEME", "professional")
 
 
+def _themes():
+    d = os.path.join(_ASSETS, "themes")
+    return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+
 def _template_candidates(theme):
     # Both spellings are in use: the professional theme ships question-card.png,
     # the fun theme question.png.
-    for t in (theme, "professional"):
+    #
+    # The last loop -- ANY theme that has the art -- is not belt and braces. It
+    # is what stops an emptied theme directory from failing the render at the
+    # PIL open, forty minutes in, having already exited 0 on the outer command.
+    # assets/themes/professional was cleared while CARD_THEME still defaulted
+    # to it, so the whole candidate list resolved to files that did not exist
+    # and the fallback below pointed at one of them.
+    seen = set()
+    for t in (theme, "professional", *_themes()):
+        if t in seen:
+            continue
+        seen.add(t)
         for n in ("question-card.png", "question.png"):
             yield os.path.join(_ASSETS, "themes", t, n)
     yield os.path.join(_ASSETS, "student-question-card-template.png")
@@ -87,17 +103,26 @@ def template_for(theme=None):
         "    python scripts/render_theme_samples.py")
 
 
+# Resolved to something that EXISTS, or left as a path that will be reported by
+# template_for() with an actionable message. The old fallback was a hardcoded
+# professional/question-card.png that had been deleted, so a missing template
+# surfaced as a FileNotFoundError out of PIL rather than as "no template".
 TEMPLATE_PATH = next(
-    (p for p in _template_candidates(THEME) if os.path.exists(p)),
-    os.path.join(_ASSETS, "themes", "professional", "question-card.png"),
-)
+    (p for p in _template_candidates(THEME) if os.path.exists(p)), None)
+if TEMPLATE_PATH is None:
+    TEMPLATE_PATH = os.path.join(_ASSETS, "themes", THEME, "question-card.png")
+elif THEME not in TEMPLATE_PATH.split(os.sep):
+    print(f"[cards] no card art under theme {THEME!r}; using "
+          f"{os.path.relpath(TEMPLATE_PATH, _ASSETS)}")
 
 # Played over every card. The screen has no audio track, so this is mixed into
 # the final deliverable by assembly.py, which reads the manifest below.
+# Same theme sweep as the card art, and for the same reason: a cleared theme
+# directory should not silently resolve to a file that is not there. Kept in
+# step with paths.card_sound, which assembly.py uses to do the actual mixing.
 CARD_SOUND_PATH = next(
-    (p for p in (os.path.join(_ASSETS, "themes", THEME, "question-card-sound.mp3"),
-                 os.path.join(_ASSETS, "themes", "professional",
-                              "question-card-sound.mp3"))
+    (p for p in (os.path.join(_ASSETS, "themes", t, "question-card-sound.mp3")
+                 for t in dict.fromkeys((THEME, "professional", *_themes())))
      if os.path.exists(p)),
     os.path.join(_ASSETS, "themes", THEME, "question-card-sound.mp3"),
 )
@@ -356,6 +381,97 @@ def get_span_text(segments, start, end):
 # Timeline planning -- everything on an integer frame grid so the pieces tile
 # the output exactly and no rounding drift accumulates over 90 minutes.
 # ---------------------------------------------------------------------------
+# A card is a substitution, so it has to be readable. The span it replaces is
+# however long the student spoke, and on a short interjection that is well under
+# a second: 17-635 lecture 13's first question is 0.58s, which renders as a
+# 14-frame flash that reads as a decoding glitch rather than as a card. The
+# display span is therefore held open to at least this long. The TEXT span is
+# untouched -- widening that would pull neighbouring instructor speech into
+# get_span_text and print it on screen as if a student had said it.
+MIN_CARD_SECONDS = 4.0
+# Two questions closer together than this are one exchange, not two cards.
+# 17-635 lecture 13 asks "Is that right?" and "Can you give an example?" 0.7s
+# apart; as separate cards they are two flashes the viewer cannot read, and as
+# one card they are a question and its follow-up, which is what happened.
+MERGE_GAP_SECONDS = 4.0
+# Reading allowance. ~2.5 words/second is a relaxed silent-reading pace, and
+# the constant covers noticing the card at all before starting to read it.
+WORDS_PER_SECOND = 2.5
+READ_LEAD_IN = 2.0
+
+
+def reading_seconds(text, min_seconds=MIN_CARD_SECONDS):
+    """How long a card carrying `text` needs to be on screen to be read."""
+    words = len(text.split())
+    return max(min_seconds, READ_LEAD_IN + words / WORDS_PER_SECOND)
+
+
+def plan_card_spans(question_intervals, segments, duration,
+                    min_seconds=MIN_CARD_SECONDS, merge_gap=MERGE_GAP_SECONDS):
+    """Merge neighbouring questions, then hold each card long enough to read.
+
+    Two separate jobs that have to happen in this order.
+
+    MERGING first, because whether two questions are one card changes how much
+    text the card carries and therefore how long it must be shown.
+
+    A merged card keeps its constituents' TEXT RANGES separately rather than
+    taking the text of the whole merged span. The gap between two questions is
+    not silence -- it is the instructor's backchannel ("Yeah, very good") --
+    and sweeping that onto the card would put words on a STUDENT QUESTION card
+    that no student said.
+
+    HOLDING second: the display span grows around the card's midpoint to the
+    reading time its text needs. The spoken span is untouched; this only
+    decides how long the card is up. Where two cards still collide the boundary
+    is split at the midpoint of the real gap, so each keeps the side its own
+    question is on.
+    """
+    if not question_intervals:
+        return []
+
+    ordered = sorted(question_intervals, key=lambda v: v["start"])
+    groups = [[ordered[0]]]
+    for iv in ordered[1:]:
+        if iv["start"] - groups[-1][-1]["end"] <= merge_gap:
+            groups[-1].append(iv)
+        else:
+            groups.append([iv])
+
+    out = []
+    for g in groups:
+        start, end = g[0]["start"], g[-1]["end"]
+        ranges = [(x["start"], x["end"]) for x in g]
+        text = " ".join(get_span_text(segments, a, b) for a, b in ranges).strip()
+        want = max(reading_seconds(text, min_seconds), end - start)
+        mid = (start + end) / 2
+        a, b = mid - want / 2, mid + want / 2
+        if a < 0:
+            a, b = 0.0, min(duration, want)
+        if b > duration:
+            a, b = max(0.0, duration - want), duration
+        if len(g) > 1:
+            print(f"[cards] merged {len(g)} questions {start:.2f}-{end:.2f}s "
+                  f"into one card ({'; '.join(repr(get_span_text(segments, x, y)) for x, y in ranges)})")
+        out.append({**g[0], "start": start, "end": end,
+                    "text_ranges": ranges, "card_text": text,
+                    "display_start": a, "display_end": b})
+
+    for prev, cur in zip(out, out[1:]):
+        if cur["display_start"] < prev["display_end"]:
+            edge = (prev["end"] + cur["start"]) / 2
+            edge = min(max(edge, prev["start"]), cur["end"])
+            prev["display_end"] = edge
+            cur["display_start"] = edge
+
+    for iv in out:
+        spoken = iv["end"] - iv["start"]
+        shown = iv["display_end"] - iv["display_start"]
+        print(f"[cards] card {iv['start']:.2f}s: spoken {spoken:.2f}s, "
+              f"shown {shown:.2f}s ({len(iv['card_text'].split())} words)")
+    return out
+
+
 def plan_timeline(question_intervals, duration, fps):
     """Return a list of pieces tiling [0, total_frames) with no gaps.
 
@@ -366,8 +482,8 @@ def plan_timeline(question_intervals, duration, fps):
 
     spans = []
     for i, iv in enumerate(question_intervals):
-        a = max(0, int(round(iv["start"] * fps)))
-        b = min(total, int(round(iv["end"] * fps)))
+        a = max(0, int(round(iv.get("display_start", iv["start"]) * fps)))
+        b = min(total, int(round(iv.get("display_end", iv["end"]) * fps)))
         if b > a:
             spans.append((a, b, i))
     spans.sort()
@@ -506,7 +622,8 @@ def burn_question_cards(
             if p["kind"] != "card":
                 continue
             iv = question_intervals[p["index"]]
-            text = get_span_text(segments, iv["start"], iv["end"])
+            text = iv.get("card_text") or get_span_text(
+                segments, iv["start"], iv["end"])
             p["png"] = render_card(
                 text, out_path=os.path.join(cards_dir, f"card_{p['index']:03d}.png")
             )
@@ -519,8 +636,10 @@ def burn_question_cards(
             {"index": p["index"],
              "start": p["start_frame"] / fps,
              "end": (p["start_frame"] + p["n_frames"]) / fps,
-             "text": get_span_text(segments, question_intervals[p["index"]]["start"],
-                                   question_intervals[p["index"]]["end"])}
+             "text": (question_intervals[p["index"]].get("card_text")
+                      or get_span_text(segments,
+                                       question_intervals[p["index"]]["start"],
+                                       question_intervals[p["index"]]["end"]))}
             for p in pieces if p["kind"] == "card"
         ]
         manifest_path = os.path.join(os.path.dirname(os.path.abspath(out_path)),
@@ -621,6 +740,15 @@ def main():
                              f"(default: min(cores={cpu_count()}, segments))")
     parser.add_argument("--keep-work", action="store_true",
                         help="Keep the intermediate segments/ and cards/ dirs")
+    parser.add_argument("--min-card-seconds", type=float,
+                        default=MIN_CARD_SECONDS,
+                        help=f"Hold every card on screen at least this long "
+                             f"(default {MIN_CARD_SECONDS:g}). The muted span "
+                             f"itself is unchanged; only how long the card is "
+                             f"shown. A sub-second card reads as a glitch.")
+    parser.add_argument("--merge-gap", type=float, default=MERGE_GAP_SECONDS,
+                        help=f"Questions closer together than this become one "
+                             f"card (default {MERGE_GAP_SECONDS:g}s)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the segment plan and exit without encoding")
     args = parser.parse_args()
@@ -636,6 +764,10 @@ def main():
     instructor_label = get_instructor_label(segments)
     intervals = merge_speaker_spans(segments, instructor_label)
     question_intervals = [iv for iv in intervals if iv["is_student_question"]]
+    if question_intervals:
+        question_intervals = plan_card_spans(
+            question_intervals, segments, probe_video(screen)["duration"],
+            args.min_card_seconds, args.merge_gap)
 
     for i, iv in enumerate(question_intervals):
         print(f"{i}: {iv['start']:.2f} - {iv['end']:.2f}")

@@ -1,0 +1,110 @@
+{
+  "_comment": [
+    "Full course titles for the Scene A rail.",
+    "Panopto gives the pipeline a course NUMBER and a lecture name and nothing",
+    "else, so the title that sits under the course code is looked up here.",
+    "One entry per course, filled in once. A lecture's own metadata.json may",
+    "carry a course_title key to override this, and --course-title overrides",
+    "both. An unknown code is not an error: the rail draws the code and the",
+    "lecture line and says so in the log.",
+    "Keep titles short enough to wrap onto two 432px lines; the renderer will",
+    "shrink and then truncate, and will tell you when it does.",
+    "A newline inside a title forces the break there; without one the renderer balances the two lines. 15-210's break is the one in Phillip's proof render."
+  ],
+  "15-210": {
+    "title": "Parallel and Sequential\nData Structures and Algorithms"
+  },
+  "17-635": {
+    "title": "Software Architectures"
+  },
+  "07-280": {
+    "title": "Artificial Intelligence and Machine Learning I"
+  },
+  "10-202": {
+    "title": "Introduction to Modern AI"
+  },
+  "10-301": {
+    "title": "Introduction to Machine Learning"
+  },
+  "10-403": {
+    "title": "Deep Reinforcement Learning & Control"
+  },
+  "10-423": {
+    "title": "Generative AI"
+  },
+  "10-701": {
+    "title": "Introduction to Machine Learning"
+  },
+  "10-707": {
+    "title": "Advanced Deep Learning"
+  },
+  "10-708": {
+    "title": "Probabilistic Graphical Models"
+  },
+  "10-725": {
+    "title": "Optimization for Machine Learning:"
+  },
+  "10-799": {
+    "title": "Special Topics: Diffusion Models & Flow Matching"
+  },
+  "11-411": {
+    "title": "Natural Language Processing"
+  },
+  "11-430": {
+    "title": "Ethics, Safety, and Social Impact in NLP and LLMs:"
+  },
+  "11-777": {
+    "title": "Multimodal Machine Learning"
+  },
+  "11-797": {
+    "title": "Question Answering"
+  },
+  "15-110": {
+    "title": "Principles of Computing"
+  },
+  "15-251": {
+    "title": "Great Ideas in Theoretical Computer Science"
+  },
+  "15-281": {
+    "title": "Artificial Intelligence: Representation and Problem Solving"
+  },
+  "15-319": {
+    "title": "Cloud Computing"
+  },
+  "15-435": {
+    "title": "Foundations of Blockchains"
+  },
+  "15-442": {
+    "title": "Machine Learning Systems"
+  },
+  "16-831": {
+    "title": "Introduction to Robot Learning"
+  },
+  "16-833": {
+    "title": "Robot Localization and Mapping"
+  },
+  "17-214": {
+    "title": "Principles of Software Construction: Objects, Design, and Concurrency"
+  },
+  "17-416": {
+    "title": "Responsible AI & AI Governance: Identifying and Mitigating Risks"
+  },
+  "17-437": {
+    "title": "Web Application Development"
+  },
+  "17-619": {
+    "title": "Product Management Essentials I"
+  },
+  "17-629": {
+    "title": "Product Management Essentials II"
+  },
+  "17-630": {
+    "title": "Prompt Engineering"
+  },
+  "17-632": {
+    "title": "Software Project Management"
+  },
+  "17-643": {
+    "title": "Quality Management"
+  }
+}

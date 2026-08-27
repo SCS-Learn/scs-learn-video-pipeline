@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <title>CMU School of Computer Science Open Courseware - Optional Lower Third</title>
+  <desc>Transparent 1920 by 1080 lower-third overlay for brief use when the professor first appears full-screen.</desc>
+
+  <g id="lower-third" inkscape:groupmode="layer" inkscape:label="Optional Lower Third - show 4 to 6 seconds">
+    <rect x="40" y="840" width="820" height="132" rx="8" fill="#0F0F10" fill-opacity="0.90"/>
+    <rect x="40" y="840" width="4" height="132" fill="#C41230"/>
+    <text x="72" y="886" fill="#FFFFFF" font-family="Open Sans, Arial, sans-serif" font-size="30" font-weight="600">Professor Name</text>
+    <text x="72" y="920" fill="#C9C9CE" font-family="Open Sans, Arial, sans-serif" font-size="17">15-210 - Parallel and Sequential Data Structures and Algorithms</text>
+    <text x="72" y="950" fill="#8E8E93" font-family="Open Sans, Arial, sans-serif" font-size="16">Lecture 12 - Binary Search Trees</text>
+  </g>
+</svg>

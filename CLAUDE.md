@@ -126,6 +126,81 @@ Submit GPU stages with:
 
 ---
 
+## The picture: scenes, layouts and the brand plate
+
+`src/video/scenes.py` decides *what* is on screen per interval, and
+`src/assembly/layout.py` draws it. Two scenes, named `pip` and `full` in every
+`scenes.json` on disk and Scene A / Scene B in Phillip's brand package;
+`src/assembly/brand.py` holds the one table that maps them.
+
+### Layouts
+
+Three geometries, selected with `--layout` (default `auto`):
+
+| Layout | Slide window | Rail | For |
+|---|---|---|---|
+| `handoff` | 1380x776 | 432 | Phillip's handoff numbers, verbatim. Reproduces the proof render. |
+| `wide` | 1520x855 | 342 | Default for a 16:9 deck. +21% slide area. |
+| `wide43` | 1140x855 | 722 | A 4:3 deck. Slide is 4:3, and the width the pillarbox was wasting goes to a much larger instructor. |
+
+`auto` measures the deck's content box — already detected for the crop — and
+picks. Without that, `wide43` would be used on the one lecture somebody
+remembered it for and every other 4:3 deck would quietly get letterboxed.
+
+**Each layout has its own plate, and they must match.** `brand.set_layout()`
+rebinds the windows, the rail, the text spec and the plate path together, so
+they cannot disagree. Rebuild a plate with
+`python -m src.assembly.brand --layout wide --build-plate`; it verifies itself
+against the geometry before writing.
+
+**Read the windows through the module (`brand.SLIDE_WINDOW`), never
+`from ... import SLIDE_WINDOW`.** A from-import binds at import time and would
+not follow a `--layout` switch — the plate would change and the rectangles
+would not.
+
+### The four scene rules
+
+From Phillip's 2026-08-20 review, all in `scenes.py` and all overridable:
+
+- **Opens on the instructor** until the slide first changes (`--open-max`,
+  capped at 120s). It used to open on a title card because `LEAD_IN` forbade
+  any cut inside the first 30s.
+- **A question card cuts to him afterwards** for `--answer-hold` seconds. The
+  card itself stays up — it is the privacy substitute for the muted question.
+- **Closes on him** for the last `--close-tail` seconds, gated on speech.
+- **Never publishes a dead screen**: a black or abandoned tail is detected and
+  the instructor is held over it.
+
+The close is a fixed tail, not a detected one, and that is deliberate — see
+the comment on `CLOSE_TAIL`. Every deck in the corpus advances to within
+seconds of the finish, so "the last slide change" would have been dead code.
+
+### Type in the rail
+
+`fit_lines` shrinks and then truncates, per lecture, and says which it did.
+The `wide` layout reserves **three** lecture lines rather than two: measured
+over the 693 lecture names in `manifests/`, three lines at a 360px rail
+truncate 5 titles where two lines truncate 78, and more titles keep the spec's
+full 32px because the wrapper no longer has to shrink to force a two-line fit.
+Lowering the shrink floor instead is strictly worse.
+
+Course titles come from `assets/brand/courses.json`, filled by
+`scripts/fetch_course_titles.py` from the registrar's own Schedule of Classes
+dump. Existing entries are kept unless `--overwrite`: `15-210` carries a
+hand-placed newline that is the break in Phillip's proof render.
+
+### Consistent branding
+
+Scene B carries the **same footer strip as Scene A**, lifted from the same art,
+over a scrim whose opacity is set per frame from the luma under it. It used to
+carry a 60%-white corner unitmark, which `Plate.legibility` measured as
+invisible — the top right of this framing is the projection screen.
+`--scene-b-watermark` restores the old mark.
+
+`assembly.py` appends a thank-you / subscribe end card built from the plate's
+own footer, so it cannot drift from the video it ends. `--no-end-card` skips it.
+
+
 ## The lecture scanner
 
 `src/scan` grades a semester of downloaded lectures so they can be triaged
@@ -211,6 +286,39 @@ would drag in the CPU `onnxruntime` that shadows `onnxruntime-gpu` for
 first's work and only adds the faces. `scripts/psc_scan_README.md` has the rest
 — the env vars, and the rsync `--include`/`--exclude` ordering that stops you
 dragging the mp4s home with the reports.
+
+`scripts/scan_all_courses.sh manifests/ <tier> <env>` fans one job out per
+course, which turns the semester into what the slowest single course costs
+(~20 min) rather than the sum. Run it twice: `signal scs-learn`, then
+`vision scs-video`.
+
+`scripts/rank_semester.sh <manifest-dir> <tag> "<Semester>"` does the whole
+thing unattended -- both tiers, the waits, the rsync and the reports. The
+harvest before it is the only step needing a human: `ingestion.py` opens a
+real browser for CMU SSO and a Duo push, so an agent cannot do it.
+
+**Course codes repeat across semesters, and the corpus path must not.**
+15-210 runs in both Spring and Fall. With one fixed `corpus/15-210` a Fall job
+would find Spring's `camera.mp4` already on disk, skip the download, and scan
+last term's lecture under this term's name -- no error, just a wrong ranking.
+`scan_all_courses.sh` takes `CORPUS_ROOT` and `MANIFEST_DIR_REMOTE` for this;
+`rank_semester.sh` sets both from its tag.
+
+**Then `scripts/semester_report.py`.** Each job writes its own `_reports/` for
+its own course, and those cannot be compared — each is ranked within itself,
+and a signal-only pass sits below the 55% grading floor so every lecture in it
+is ungraded. The semester report re-scores every cached `scan.json` through the
+same `src.scan.score` and writes one ranking plus a course league table. This
+is not a formatting nicety: on the first two courses, signal alone ranked
+15-210 above 17-635 and adding vision reversed it.
+
+It also writes a **second ranking restricted to 1080p+ recordings**
+(`--min-height`, default 1080). Resolution is a filter rather than a scored
+metric because it is the one quality floor no remediation lifts. Both streams
+must clear it and the CAMERA is what decides: over Spring 2026, 87% of screen
+captures are 1080 or better and only 24% of cameras are, so a screen-only test
+passes 625 of 715 lectures and means nothing. Requiring both leaves 120
+lectures in 7 courses -- and drops 10-707, the overall winner, entirely.
 
 ---
 
@@ -364,6 +472,34 @@ restores the absolute table. What it trades away is the thing to remember:
 still produces an A, because something has to be at the top. Use absolute
 scores to decide whether to publish at all, and recalibrated ones to decide
 what to publish first; `--absolute` ignores the override file for one run.
+
+**A default argument binds once, at import.** `verify_plate(windows=WINDOWS)`
+and `Plate.__init__(windows=WINDOWS)` both captured whichever geometry was
+active when the module was first imported, then checked every later plate
+against it — so `--layout handoff` loaded the handoff plate and verified it
+against the wide rectangles. Resolve module-level state inside the function,
+not in the signature.
+
+**Render workers are SPAWNED, not forked, on macOS.** A `ProcessPoolExecutor`
+worker re-imports `layout.py` and `brand.py` from scratch and gets the module
+defaults, not whatever `main()` selected. `--layout` and `--scene-b-watermark`
+were both honoured by the parent and ignored by every worker, which fails
+silently because both geometries render a plausible-looking frame. Anything
+`main()` sets must go through the pool `initializer`.
+
+**More render workers is slower.** Rendering 60s of lecture 12 on a 10-core
+laptop: jobs=3 takes 32.4s, jobs=8 takes 48.5s, jobs=10 takes 57.6s. The curve
+is flat from 2 to 6 and then degrades — every worker spawns its own internally
+threaded ffmpeg readers and encoder. `default_jobs()` is cores/3 for the same
+reason `--jobs` on the scanner is. Swapping the encoder changes nothing, so it
+is not the encode.
+
+**A concat'd end card must match the body's TIMESCALE.** The concat demuxer
+stream-copies into a container that keeps the first input's timescale, so a
+card written at 90000 against a body at 12800 has every packet duration
+reinterpreted: the audio read 65s and the video read 456s. Nothing errors; the
+file just sits on its last frame for six minutes. Read the timescale off the
+body with ffprobe.
 
 **HuggingFace gating.** `transcription.py` pins
 `pyannote/speaker-diarization-3.1`. Accept its conditions **and** those of

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <title>CMU School of Computer Science Open Courseware - Scene B Full Camera</title>
+  <desc>Full-bleed landscape professor camera feed with a subtle upper-right 60 percent white unitmark watermark.</desc>
+
+  <g id="full-camera-feed" inkscape:groupmode="layer" inkscape:label="01 Full Camera Feed - replace fill with live source">
+    <rect width="1920" height="1080" fill="#202023"/>
+    <text x="960" y="525" text-anchor="middle" fill="#737378" font-family="Open Sans, Arial, sans-serif" font-size="20" letter-spacing="3">FULL LANDSCAPE CAMERA FEED</text>
+    <text x="960" y="560" text-anchor="middle" fill="#505055" font-family="Open Sans, Arial, sans-serif" font-size="15">1920 x 1080</text>
+  </g>
+
+  <g id="watermark" inkscape:groupmode="layer" inkscape:label="02 Persistent Watermark - 60 percent alpha">
+    <image x="1510" y="40" width="330" height="59.07" preserveAspectRatio="xMinYMid meet" xlink:href="assets/scs-unitmark-white-60-percent.png"/>
+  </g>
+
+  <g id="production-guides" inkscape:groupmode="layer" inkscape:label="99 Production Guides - hidden" display="none">
+    <rect x="40" y="40" width="1840" height="1000" fill="none" stroke="#00FFFF" stroke-width="2" stroke-dasharray="10 8"/>
+    <text x="50" y="68" fill="#00FFFF" font-family="Open Sans, Arial, sans-serif" font-size="15">40 px action safe</text>
+    <rect x="96" y="54" width="1728" height="972" fill="none" stroke="#FF00FF" stroke-width="2" stroke-dasharray="10 8"/>
+    <text x="106" y="84" fill="#FF00FF" font-family="Open Sans, Arial, sans-serif" font-size="15">5% title safe</text>
+  </g>
+</svg>

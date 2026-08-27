@@ -27,6 +27,7 @@ keeps its manifest.
 """
 
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -48,11 +49,26 @@ except ImportError:
 
 
 def _login(timeout):
-    """get_cookies(), whichever signature this copy of ingestion.py has."""
-    try:
+    """get_cookies(), whichever signature this copy of ingestion.py has.
+
+    The signature is INSPECTED rather than probed by calling and catching
+    TypeError. Catching it around the call cannot tell "this function does not
+    take a timeout" from "this function raised TypeError while driving a
+    browser", so a genuine failure mid-login would be retried as though it
+    were a signature mismatch -- and the retry lands on the older code path,
+    which blocks on input() and dies with an unrelated EOFError. That is
+    exactly how it failed the first time it was run for real: two confusing
+    tracebacks, neither naming the actual problem.
+    """
+    if "timeout" in inspect.signature(get_cookies).parameters:
         return get_cookies(timeout=timeout)
-    except TypeError:
-        return get_cookies()
+    # Older copies wait on a bare input(), which needs a real terminal.
+    if not sys.stdin or not sys.stdin.isatty():
+        raise RuntimeError(
+            "This copy of src/ingestion.py waits for you to press Enter after "
+            "logging in, so it needs a real terminal -- run it in one, or use "
+            "a copy of ingestion.py that polls for the .ASPXAUTH cookie.")
+    return get_cookies()
 
 
 def _safe_name(course):
@@ -88,6 +104,7 @@ def list_semester_folders(semester, session):
     }
     out, seen = [], set()
     raw_keys = None
+    list_semester_folders.flags = {}
     for page in range(MAX_PAGES):
         r = session.get(FOLDER_API, params={
             "parentId": "null", "folderSet": 1, "searchTerm": semester,
@@ -110,9 +127,94 @@ def list_semester_folders(semester, session):
             seen.add(fid)
             fresh += 1
             out.append((f.get("Name") or "?", fid, _session_count(f)))
+            list_semester_folders.flags[fid] = {
+                k: f.get(k) for k in
+                ("SessionCount", "HasAccessibleChildren", "IsDepartment",
+                 "FolderType", "IsEnumerable")}
         if fresh == 0:
             break                    # the endpoint is repeating itself
     list_semester_folders.last_keys = raw_keys or []
+    return out
+
+
+def list_children(parent_id, session):
+    """Direct subfolders of one folder. Same endpoint, no search term.
+
+    Needed because the search above matches folder NAMES at the top level, and
+    a semester is not always laid out that way. Spring 2026 had one folder per
+    course, each titled "Spring 2026: <code> ...", so a name search found all
+    35. Fall 2026 came back as two: a container called "Fall 2026" and a
+    single course. A container's children are named for the course and not for
+    the term, so nothing about them matches "Fall 2026" and a name search
+    cannot see them however many recordings they hold.
+    """
+    csrf = session.cookies.get("csrfToken")
+    headers = {
+        "x-csrf-token": csrf,
+        "x-requested-with": "XMLHttpRequest",
+        "accept": "application/json, text/javascript, */*; q=0.01",
+    }
+    out = []
+    for page in range(MAX_PAGES):
+        r = session.get(FOLDER_API, params={
+            "parentId": parent_id, "folderSet": 1,
+            "includeMyFolder": "false", "includePersonalFolders": "true",
+            "page": page, "sort": "Name", "names[0]": "SessionCount",
+        }, headers=headers)
+        try:
+            folders = r.json()
+        except ValueError:
+            break
+        if not folders:
+            break
+        for f in folders:
+            fid = f.get("Id")
+            if fid:
+                out.append((f.get("Name") or "?", fid, _session_count(f)))
+    return out
+
+
+def walk_semester(semester, session, depth=2):
+    """Every folder under a semester, by name match then by descent.
+
+    Returns [(name, id, sessions, is_container)]. `depth` is how many levels
+    below a matched folder to look; 2 covers "Fall 2026 > 15-210 > Recitations"
+    without turning a top-level match into a crawl of the whole site.
+    """
+    walk_semester.child_counts, walk_semester.errors = {}, {}
+    top = list_semester_folders(semester, session)
+    seen = {fid for _n, fid, _s in top}
+    out = [(n, i, s, False) for n, i, s in top]
+    frontier = list(top)
+    for _level in range(depth):
+        nxt = []
+        for name, fid, _sessions in frontier:
+            try:
+                found = list_children(fid, session)
+            except Exception as e:                       # noqa: BLE001
+                walk_semester.errors[fid] = f"{type(e).__name__}: {e}"
+                found = []
+            walk_semester.child_counts[fid] = len(found)
+            kids = [k for k in found if k[1] not in seen]
+            # Marked a container on ALL its children, not just the new ones.
+            # The Fall 2026 shelf holds exactly one course folder, which the
+            # name search had already found, so `kids` was empty and the shelf
+            # was left in the harvest list as if it were a course -- which
+            # would have produced a manifest of whatever loose recordings
+            # happen to sit in it, under the name of the term.
+            if found:
+                # A folder with children is a container. It may still hold
+                # recordings of its own, so it is not dropped -- just marked,
+                # so --list-only can show what is a course and what is a shelf.
+                out = [(n, i, s, True) if i == fid else (n, i, s, c)
+                       for n, i, s, c in out]
+            for kn, ki, ks in kids:
+                seen.add(ki)
+                out.append((kn, ki, ks, False))
+                nxt.append((kn, ki, ks))
+        frontier = nxt
+        if not frontier:
+            break
     return out
 
 
@@ -132,11 +234,23 @@ _COUNT_KEYS = ("SessionCount", "Sessions", "NumberOfSessions", "SessionsCount",
 def _session_count(folder):
     for k in _COUNT_KEYS:
         v = folder.get(k)
+        if isinstance(v, bool):          # True is an int in Python; not a count
+            continue
         if isinstance(v, int):
             return v
         if isinstance(v, str) and v.isdigit():
             return int(v)
+        if v is not None:
+            # The key EXISTS but holds something else. Worth recording: the
+            # Fall 2026 run reported "?" for every folder while listing
+            # SessionCount among the fields the API returned, which reads as
+            # a missing field and is not -- it is a present field holding null
+            # or an object, and that is a different fix.
+            _session_count.odd.setdefault(k, repr(v)[:60])
     return None
+
+
+_session_count.odd = {}
 
 
 def course_from_folder(name, semester):
@@ -229,7 +343,16 @@ def _discover_and_harvest(args):
     session = _login(args.login_timeout)
     print(f"\nsearching Panopto for folders matching {args.semester!r} ...",
           flush=True)
-    folders = list_semester_folders(args.semester, session)
+    walked = walk_semester(args.semester, session, depth=args.depth)
+    # A container is a shelf, not a course: harvesting it yields whatever
+    # loose recordings sit directly in it, while its children are the actual
+    # courses. Keep it only if it has recordings of its own.
+    folders = [(n, i, s) for n, i, s, container in walked
+               if not container or (s or 0) > 0]
+    containers = sum(1 for *_x, c in walked if c)
+    if containers:
+        print(f"  {containers} container folder(s) descended into "
+              f"(depth {args.depth})")
     # An UNKNOWN count (None) is never filtered out -- see _session_count.
     keep = [(n, i, s) for n, i, s in folders
             if s is None or s >= args.min_sessions]
@@ -245,13 +368,50 @@ def _discover_and_harvest(args):
     if any(s is None for _n, _i, s in keep):
         keys = getattr(list_semester_folders, "last_keys", [])
         print("\n   '?' means Panopto did not report a count for that folder.")
-        if keys:
+        if _session_count.odd:
+            for k, v in _session_count.odd.items():
+                print(f"   {k} was present but held {v}")
+        elif keys:
             print(f"   (fields it did return: {', '.join(keys)})")
+        print("   Unknown counts are never filtered out, so --min-sessions "
+              "cannot silently drop them.")
     if not keep:
         print("\nNothing to harvest. Check the semester string -- Panopto "
               "matches the folder TITLE, e.g. 'Spring 2026'.")
         return 1
     if args.list_only:
+        # Say what the descent actually did. "2 folders matched" is the same
+        # output whether the semester has two folders or whether the child
+        # lookup silently returned nothing, and those need different fixes.
+        flags = getattr(list_semester_folders, "flags", {})
+        counts = getattr(walk_semester, "child_counts", {})
+        errors = getattr(walk_semester, "errors", {})
+        if flags:
+            print("\n   folder diagnostics:")
+            for name, fid, _s in folders:
+                fl = flags.get(fid, {})
+                kids = counts.get(fid)
+                bits = [f"children={kids if kids is not None else 'not looked'}"]
+                if fl.get("HasAccessibleChildren") is not None:
+                    bits.append(f"HasAccessibleChildren="
+                                f"{fl['HasAccessibleChildren']}")
+                if fl.get("IsDepartment") is not None:
+                    bits.append(f"IsDepartment={fl['IsDepartment']}")
+                if fl.get("FolderType") is not None:
+                    bits.append(f"FolderType={fl['FolderType']}")
+                if fid in errors:
+                    bits.append(f"ERROR {errors[fid]}")
+                print(f"     {name[:44]:<44} {'  '.join(bits)}")
+            # Trust the child lookup, not the flag. Fall 2026 reported
+            # HasAccessibleChildren=False on a folder the lookup then returned
+            # a child for, so the flag is advisory at best.
+            stuck = [n for n, fid, _s in folders
+                     if flags.get(fid, {}).get("HasAccessibleChildren")
+                     and not counts.get(fid)]
+            if stuck:
+                print(f"\n   {len(stuck)} folder(s) report children that the "
+                      f"child lookup did not return.")
+                print("   That is a lookup problem, not an empty semester.")
         print(f"\n--list-only: stopping. Re-run without it to harvest these "
               f"{len(keep)} folder(s).")
         return 0
@@ -290,6 +450,13 @@ def main():
     p.add_argument("--list-only", action="store_true",
                    help="With --all-courses: print what WOULD be harvested "
                         "and stop. Run this first.")
+    p.add_argument("--depth", type=int, default=2,
+                   help="With --all-courses: how many levels to descend below "
+                        "a folder whose NAME matched. A semester laid out as "
+                        "one container holding per-course folders is invisible "
+                        "to a name search, because the children are named for "
+                        "the course and not the term. 0 restores the old "
+                        "name-match-only behaviour.")
     p.add_argument("--min-sessions", type=int, default=0,
                    help="With --all-courses, skip folders holding fewer "
                         "recordings than this. Default 0 -- a folder whose "

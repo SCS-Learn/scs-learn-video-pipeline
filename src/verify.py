@@ -170,6 +170,14 @@ def _stage_checks(stage, p):
                  {"expect_audio": True, "size_ratio": (0.02, 8.0)})]
     if stage == "cards":
         return [("screen_with_cards.mp4", p.screen_with_cards, p.screen_sync, {})]
+    if stage == "scenes":
+        return [("scenes.json", p.scenes, None, {})]
+    if stage == "layout":
+        # Measured against the camera, not the screen: the layout render takes
+        # its clock and its audio from the camera, and screen_with_cards is
+        # longer than both wherever a card was inserted.
+        ref = p.camera_anon if os.path.exists(p.camera_anon) else p.camera_muted
+        return [("layout render", p.layout, ref, {"expect_audio": True})]
     if stage == "captions":
         return [("captions.srt", p.captions, None, {})]
     if stage == "assembly":
@@ -180,6 +188,37 @@ def _stage_checks(stage, p):
                            {"expect_audio": True}))
         return checks
     return []
+
+
+def _check_scenes(path, label):
+    """The cut list must TILE the lecture, not merely parse.
+
+    A gap is not a cosmetic problem: layout falls back to Scene A over
+    uncovered time, so a hole in the list is a stretch of video whose framing
+    nobody chose. Overlaps are worse -- the first matching span wins, silently.
+    """
+    if not os.path.exists(path):
+        return [f"{label}: missing ({path})"]
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return [f"{label}: unreadable JSON ({e})"]
+    scenes = doc.get("scenes") if isinstance(doc, dict) else doc
+    if not isinstance(scenes, list) or not scenes:
+        return [f"{label}: no scenes"]
+    problems = []
+    prev = 0.0
+    for s in sorted(scenes, key=lambda s: s["start"]):
+        if s["start"] > prev + 0.05:
+            problems.append(f"{label}: gap {prev:.1f}-{s['start']:.1f}s")
+        elif s["start"] < prev - 0.05:
+            problems.append(f"{label}: overlap at {s['start']:.1f}s")
+        prev = max(prev, s["end"])
+    dur = doc.get("duration") if isinstance(doc, dict) else None
+    if dur and prev < dur - 0.5:
+        problems.append(f"{label}: ends at {prev:.1f}s, lecture is {dur:.1f}s")
+    return problems
 
 
 def _check_json(path, label):
@@ -216,7 +255,9 @@ def verify_stage(stage, paths, strict=True):
     p = paths if isinstance(paths, LecturePaths) else LecturePaths(paths)
     problems = []
     for label, path, ref, kwargs in _stage_checks(stage, p):
-        if path.endswith(".json"):
+        if path.endswith("scenes.json"):
+            problems += _check_scenes(path, label)
+        elif path.endswith(".json"):
             problems += _check_json(path, label)
         elif path.endswith(".srt"):
             problems += _check_srt(path, label)
@@ -247,7 +288,7 @@ def main():
 
     stages = ([args.stage] if args.stage else
               ["sync", "transcription", "audio", "face_anon", "track_instructor",
-               "cards", "captions", "assembly"])
+               "cards", "scenes", "layout", "captions", "assembly"])
     total = 0
     for stage in stages:
         checks = _stage_checks(stage, p)

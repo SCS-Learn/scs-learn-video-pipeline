@@ -13,3 +13,18 @@ logs/
 .demo-work/
 assets/themes/*/samples/
 .full-work/
+
+# Scan output. Deliberately not committed: reports/ carries per-lecture results
+# for the whole semester INCLUDING the `owner` column -- 28 named CMU
+# instructors with a score and a grade against their recordings -- and this is
+# a public repository. The rubric measures the recording rather than the
+# teaching, but a public table of named people with grades does not read that
+# way. Regenerate locally with scripts/semester_report.py.
+reports/
+
+# The worktree symlinks. `.venv/` and `data/` above have trailing slashes and
+# so do not match a SYMLINK of the same name; without these two lines a
+# `git add -A` from a worktree commits absolute paths into one machine's home
+# directory.
+/.venv
+/data

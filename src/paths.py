@@ -104,19 +104,35 @@ class LecturePaths:
     def card_sound(self):
         """Sting played over every question card.
 
-        Per theme: both themes currently ship a byte-identical copy, but the
-        file lives inside each theme directory rather than beside them, so the
-        lookup follows the theme rather than assuming one shared asset.
+        Per theme: the file lives inside each theme directory rather than
+        beside them, so the lookup follows the theme rather than assuming one
+        shared asset.
+
+        The last resort is ANY theme that has the file, and it is not
+        decoration. assembly's mix_card_sound returns the video unchanged when
+        this path does not exist -- no error, no warning -- so a theme
+        directory that has been emptied means every question card plays over
+        the silence the audio pass left, and nothing says so. That is exactly
+        what happened when assets/themes/professional was cleared while
+        CARD_THEME still defaulted to it.
         """
         assets = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "..", "assets", "themes")
         theme = os.environ.get("CARD_THEME", "professional")
-        for cand in (os.path.join(assets, theme, "question-card-sound.mp3"),
+        preferred = os.path.join(assets, theme, "question-card-sound.mp3")
+        for cand in (preferred,
                      os.path.join(assets, "professional", "question-card-sound.mp3"),
                      os.path.join(assets, "question-card-sound.mp3")):
             if os.path.exists(cand):
                 return cand
-        return os.path.join(assets, theme, "question-card-sound.mp3")
+        for other in sorted(os.listdir(assets)) if os.path.isdir(assets) else []:
+            cand = os.path.join(assets, other, "question-card-sound.mp3")
+            if os.path.exists(cand):
+                print(f"[paths] no question-card-sound.mp3 under theme "
+                      f"{theme!r}; using {other!r}'s copy. Set CARD_THEME, or "
+                      f"put the sting back, if that is not what you want.")
+                return cand
+        return preferred
 
     # --- stage 7: captions -----------------------------------------------
     @property
@@ -139,6 +155,40 @@ class LecturePaths:
     def camera_tracked(self):
         """Zoomed crop of the anonymized camera that follows the instructor."""
         return self._p("camera_muted_anon_tracked.mp4")
+
+    @property
+    def instructor_track(self):
+        """Per-frame instructor boxes, cached by the layout renderer.
+
+        Detection is the expensive half of following him and the framing
+        derived from it is nearly free, so re-deciding how the camera moves
+        should not mean re-detecting where he is. Same bargain as
+        track_instructor's --save-path.
+        """
+        return self._p("instructor_track.json")
+
+    # --- stage 8c: scene decisions ---------------------------------------
+    @property
+    def scenes(self):
+        """Cut list: which layout the frame is in over each interval.
+
+        Written by src/video/scenes.py, consumed by assembly. Kept as a file
+        rather than recomputed inside assembly so the cuts can be reviewed, and
+        hand-edited, before committing to a full-length encode.
+        """
+        return self._p("scenes.json")
+
+    # --- stage 8d: the brand layout render --------------------------------
+    @property
+    def layout(self):
+        """The lecture composited into the two brand scenes.
+
+        This is the picture the published video is made of. assembly.py takes
+        it as its video and adds the finishing -- the card sting, the
+        camera-only cut -- rather than re-compositing, so the plate geometry
+        lives in exactly one place.
+        """
+        return self._p(f"{self.key}-layout.mp4")
 
     # --- stage 9: assembly -----------------------------------------------
     @property

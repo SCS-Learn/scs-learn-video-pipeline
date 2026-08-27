@@ -13,14 +13,22 @@ Stage order matters in two non-obvious ways:
     and zooming an un-anonymized camera makes any student in frame MORE
     identifiable, not less.
   * cards needs sync to have produced screen_sync.mp4 first.
+  * layout must run AFTER cards and scenes. It draws the slide window from
+    screen_with_cards.mp4, so running it first drops every question card -- the
+    privacy substitute for a student's muted question -- out of the picture.
+    scenes, in turn, must read screen_sync.mp4 rather than the carded file: a
+    card is a static full-frame image and would otherwise read as a frozen
+    slide and cut away from itself.
+  * assembly no longer composites anything. layout decides the picture from
+    assets/brand/plates; assembly stream-copies it and adds the sound. It
+    refuses to run if the layout render is missing rather than falling back to
+    the pre-brand corner picture-in-picture, which would publish a
+    different-looking video under the same filename.
 
-track_instructor is listed here rather than left as a manual command because
-assembly prefers its output whenever the file happens to exist. Off the stage
-list, whether a lecture got the tracked crop depended on someone remembering
-to run it, and two runs of this pipeline over the same lecture could produce
-different final videos with nothing in the log to say why. Skip it explicitly
-(--skip track_instructor) when you do not want it; assembly then falls back to
-the uncropped camera and says so.
+track_instructor is on the stage list but does not run by default -- nothing in
+the current picture consumes its output. See STAGES for why. Run it on its own
+with --only track_instructor if you need the pre-brand corner
+picture-in-picture.
 
 Where each stage belongs is encoded in STAGES. `cards` is marked local_only:
 it takes 20+ minutes and is not to be run on PSC. The runner refuses rather
@@ -37,18 +45,30 @@ import time
 from src.paths import LecturePaths
 from src.verify import VerificationError, verify_stage
 
-# name, module, where it runs, note
+# name, module, where it runs, note, and whether it runs by default.
+#
+# track_instructor is OFF by default. It used to be on because assembly
+# preferred its output whenever the file existed, so leaving it out made two
+# runs over the same lecture produce different videos. That is no longer true:
+# the picture now comes from src/assembly/layout.py, which does its own motion
+# tracking on the CPU and reads the anonymized camera directly -- it never
+# opens the tracked crop. Running it anyway would spend GPU hours out of a
+# ~495-hour grant producing a file only `assembly --legacy-pip` reads. It stays
+# selectable with `--only track_instructor` for exactly that case.
 STAGES = [
-    ("sync",          "src.sync",              "cpu",        "trim screen to camera"),
-    ("transcription", "src.audio.transcription", "gpu",      "whisperx + diarization + question classification"),
-    ("audio",         "src.audio.audio",       "cpu",        "mute non-instructor audio"),
-    ("face_anon",     "src.video.face_anon",   "gpu_no_v100", "pixelate non-instructor faces"),
-    ("track_instructor", "src.video.track_instructor", "gpu_no_v100", "crop the camera to follow the instructor (PiP source)"),
-    ("cards",         "src.audio.cards",       "local_only", "burn question cards (20+ min; NOT on PSC)"),
-    ("captions",      "src.audio.captions",    "cpu",        "write .srt"),
-    ("assembly",      "src.assembly.assembly", "cpu",        "final picture-in-picture"),
+    ("sync",          "src.sync",              "cpu",        "trim screen to camera", True),
+    ("transcription", "src.audio.transcription", "gpu",      "whisperx + diarization + question classification", True),
+    ("audio",         "src.audio.audio",       "cpu",        "mute non-instructor audio", True),
+    ("face_anon",     "src.video.face_anon",   "gpu_no_v100", "pixelate non-instructor faces", True),
+    ("track_instructor", "src.video.track_instructor", "gpu_no_v100", "crop the camera to follow the instructor (only --legacy-pip uses it)", False),
+    ("cards",         "src.audio.cards",       "local_only", "burn question cards (20+ min; NOT on PSC)", True),
+    ("scenes",        "src.video.scenes",      "cpu",        "decide Scene A vs Scene B per interval", True),
+    ("layout",        "src.assembly.layout",   "cpu",        "composite the SCS brand scenes (the picture)", True),
+    ("captions",      "src.audio.captions",    "cpu",        "write .srt", True),
+    ("assembly",      "src.assembly.assembly", "cpu",        "finish: card sting, faststart, camera-only cut", True),
 ]
 STAGE_NAMES = [s[0] for s in STAGES]
+DEFAULT_OFF = [s[0] for s in STAGES if not s[4]]
 
 
 def on_psc():
@@ -80,6 +100,10 @@ def main():
     parser.add_argument("--to", dest="end", default=None, choices=STAGE_NAMES)
     parser.add_argument("--only", default=None, choices=STAGE_NAMES)
     parser.add_argument("--skip", action="append", default=[], choices=STAGE_NAMES)
+    parser.add_argument("--with", dest="with_stage", action="append", default=[],
+                        choices=DEFAULT_OFF,
+                        help=f"Also run a stage that is off by default "
+                             f"({', '.join(DEFAULT_OFF)})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the commands without running them")
     parser.add_argument("--force", action="store_true",
@@ -96,12 +120,17 @@ def main():
 
     if args.only:
         selected = [s for s in STAGES if s[0] == args.only]
+    elif args.with_stage:
+        i0 = STAGE_NAMES.index(args.start) if args.start else 0
+        i1 = STAGE_NAMES.index(args.end) if args.end else len(STAGES) - 1
+        selected = [s for s in STAGES[i0:i1 + 1]
+                    if s[4] or s[0] in args.with_stage]
     else:
         i0 = STAGE_NAMES.index(args.start) if args.start else 0
         i1 = STAGE_NAMES.index(args.end) if args.end else len(STAGES) - 1
         if i1 < i0:
             raise SystemExit(f"--from {args.start} comes after --to {args.end}")
-        selected = STAGES[i0:i1 + 1]
+        selected = [s for s in STAGES[i0:i1 + 1] if s[4]]
     selected = [s for s in selected if s[0] not in args.skip]
 
     here_is_psc = on_psc()
@@ -109,7 +138,7 @@ def main():
     print(f"[pipeline] running on {'PSC' if here_is_psc else 'this machine'} "
           f"({socket.getfqdn()})")
     print("[pipeline] stages:")
-    for name, _, where, note in selected:
+    for name, _, where, note, _on in selected:
         print(f"    {name:14s} [{where:12s}] {note}")
 
     blocked = [s[0] for s in selected if s[2] == "local_only" and here_is_psc]
@@ -124,7 +153,7 @@ def main():
             f"Use --force only if you genuinely mean to override this.")
 
     total = 0.0
-    for name, module, where, _ in selected:
+    for name, module, where, _note, _on in selected:
         extra = []
         if where == "gpu_no_v100":
             # Guard rail rather than a silent crash: onnxruntime-gpu has no

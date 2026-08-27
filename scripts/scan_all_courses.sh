@@ -43,6 +43,17 @@ PSC_USER="$(grep -E '^PSC_USER=' .env 2>/dev/null | cut -d= -f2- | tr -d '"' )"
 [ -n "$PSC_USER" ] || { echo "PSC_USER not set in .env" >&2; exit 1; }
 OCEAN="/ocean/projects/cis260220p/$PSC_USER"
 
+# Where this semester's media and manifests live. Overridable because course
+# CODES REPEAT ACROSS SEMESTERS -- 15-210 runs in both Spring and Fall -- so a
+# single fixed corpus/15-210 would have a Fall job find Spring's camera.mp4
+# already on disk, skip the download, and scan last term's lecture under this
+# term's name. Nothing would error; the ranking would just be wrong.
+#
+#     CORPUS_ROOT=$OCEAN/corpus-f26 MANIFEST_DIR_REMOTE=$OCEAN/manifests-f26 \
+#         ./scripts/scan_all_courses.sh manifests-f26/ signal scs-learn
+CORPUS_ROOT="${CORPUS_ROOT:-$OCEAN/corpus}"
+MANIFEST_DIR_REMOTE="${MANIFEST_DIR_REMOTE:-$OCEAN/manifests}"
+
 # Per-job width. Sized so ~30 courses can be RUNNING rather than queued;
 # PER_JOB_WORKERS then divides those cores between scan workers, which is the
 # same oversubscription lesson psc_scan.sbatch already carries.
@@ -55,14 +66,15 @@ MANIFESTS=("$MANIFEST_DIR"/manifest.*.json)
 
 echo "=============================================================="
 echo "fanning out $((${#MANIFESTS[@]})) course(s)   tier=$TIER  env=$ENV"
+echo "corpus: $CORPUS_ROOT"
 echo "=============================================================="
 
 # One transfer for the lot. Thirty scp calls over the DTN is thirty round
 # trips for a few megabytes.
-./scripts/psc.sh run "mkdir -p $OCEAN/manifests $OCEAN/corpus" >/dev/null || exit 1
+./scripts/psc.sh run "mkdir -p '$MANIFEST_DIR_REMOTE' '$CORPUS_ROOT'" >/dev/null || exit 1
 echo "copying manifests to the DTN ..."
 rsync -az -e "ssh -o BatchMode=yes" "${MANIFESTS[@]}" \
-    "psc-dtn:$OCEAN/manifests/" || exit 1
+    "psc-dtn:$MANIFEST_DIR_REMOTE/" || exit 1
 
 SUBMITTED=0
 SKIPPED=0
@@ -83,8 +95,8 @@ for m in "${MANIFESTS[@]}"; do
         continue
     fi
 
-    export_terms="ALL,CONDA_ENV=$ENV,MANIFEST=$OCEAN/manifests/$base"
-    export_terms="$export_terms,CORPUS_DIR=$OCEAN/corpus/$course"
+    export_terms="ALL,CONDA_ENV=$ENV,MANIFEST=$MANIFEST_DIR_REMOTE/$base"
+    export_terms="$export_terms,CORPUS_DIR=$CORPUS_ROOT/$course"
     export_terms="$export_terms,TIER=$TIER,JOBS=$PER_JOB_WORKERS,DL_JOBS=6"
     export_terms="$export_terms,VISION_FRAMES=80"
     [ -n "$EXTRA" ] && export_terms="$export_terms,$EXTRA"
@@ -113,4 +125,4 @@ echo
 echo "watch:   ./scripts/psc.sh run 'squeue -u \$USER'"
 echo "results: rsync -az -e 'ssh -o BatchMode=yes' --include='*/' \\"
 echo "           --include='scan.json' --include='metadata.json' --exclude='*' \\"
-echo "           psc-dtn:$OCEAN/corpus/ reports/psc-cache/"
+echo "           psc-dtn:$CORPUS_ROOT/ reports/psc-cache/"

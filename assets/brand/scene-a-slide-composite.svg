@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <title>CMU School of Computer Science Open Courseware - Scene A Slide Composite</title>
+  <desc>Editable broadcast layout with slide feed, professor camera feed, course metadata, unitmark, and subscription call to action.</desc>
+
+  <defs>
+    <clipPath id="slide-feed-clip"><rect x="40" y="100" width="1380" height="776" rx="12"/></clipPath>
+    <clipPath id="speaker-feed-clip"><rect x="1448" y="100" width="432" height="576" rx="12"/></clipPath>
+  </defs>
+
+  <g id="background" inkscape:groupmode="layer" inkscape:label="01 Background">
+    <rect width="1920" height="1080" fill="#0F0F10"/>
+  </g>
+
+  <g id="slide-feed" inkscape:groupmode="layer" inkscape:label="02 Slide Feed - replace fill with live source">
+    <g clip-path="url(#slide-feed-clip)">
+      <rect x="40" y="100" width="1380" height="776" fill="#18181A"/>
+      <text x="730" y="477" text-anchor="middle" fill="#737378" font-family="Open Sans, Arial, sans-serif" font-size="18" letter-spacing="3">SLIDE FEED</text>
+      <text x="730" y="511" text-anchor="middle" fill="#505055" font-family="Open Sans, Arial, sans-serif" font-size="15">16:9 - 1380 x 776</text>
+    </g>
+    <rect x="40.5" y="100.5" width="1379" height="775" rx="11.5" fill="none" stroke="#D7D7DA" stroke-opacity="0.55" stroke-width="1"/>
+  </g>
+
+  <g id="speaker-feed" inkscape:groupmode="layer" inkscape:label="03 Speaker Feed - replace fill with live source">
+    <g clip-path="url(#speaker-feed-clip)">
+      <rect x="1448" y="100" width="432" height="576" fill="#202023"/>
+    </g>
+    <rect x="1448.5" y="100.5" width="431" height="575" rx="11.5" fill="none" stroke="#D7D7DA" stroke-opacity="0.42" stroke-width="1"/>
+  </g>
+
+  <g id="course-metadata" inkscape:groupmode="layer" inkscape:label="04 Course Metadata - editable text">
+    <text x="1448" y="718" fill="#C41230" font-family="Open Sans, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="1.8">15-210</text>
+    <text x="1448" y="752" fill="#A5A5AA" font-family="Open Sans, Arial, sans-serif" font-size="17">Parallel and Sequential</text>
+    <text x="1448" y="777" fill="#A5A5AA" font-family="Open Sans, Arial, sans-serif" font-size="17">Data Structures and Algorithms</text>
+    <line x1="1448" y1="800" x2="1880" y2="800" stroke="#333336" stroke-width="1"/>
+    <text x="1448" y="839" fill="#FFFFFF" font-family="Open Sans, Arial, sans-serif" font-size="32" font-weight="600">Lecture 12:</text>
+    <text x="1448" y="879" fill="#FFFFFF" font-family="Open Sans, Arial, sans-serif" font-size="32" font-weight="600">Binary Search Trees</text>
+    <text x="1448" y="916" fill="#8E8E93" font-family="Open Sans, Arial, sans-serif" font-size="18">Spring 2026</text>
+  </g>
+
+  <g id="footer" inkscape:groupmode="layer" inkscape:label="05 Footer">
+    <rect x="0" y="972" width="1920" height="108" fill="#09090A"/>
+    <rect x="0" y="972" width="1920" height="3" fill="#C41230"/>
+
+    <g id="official-unitmark" inkscape:label="Official Unitmark - replace with CMU vector master before final export">
+      <image x="40" y="995" width="340" height="60.85" preserveAspectRatio="xMinYMid meet" xlink:href="assets/scs-unitmark-white-transparent.png"/>
+    </g>
+
+    <line x1="1419" y1="995" x2="1419" y2="1057" stroke="#343438" stroke-width="1"/>
+
+    <g id="subscribe-cta" inkscape:label="Subscription CTA - editable text">
+      <circle cx="1518" cy="1026" r="27" fill="#C41230"/>
+      <path d="M1507 1034h22l-4-6v-7c0-5-3-9-7-9s-7 4-7 9v7zM1515 1039h6" fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="1563" y="1018" fill="#FFFFFF" font-family="Open Sans, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="1.2">CONTINUE LEARNING</text>
+      <text x="1563" y="1046" fill="#B5B5BA" font-family="Open Sans, Arial, sans-serif" font-size="16">Subscribe for new lectures</text>
+    </g>
+  </g>
+
+  <g id="production-guides" inkscape:groupmode="layer" inkscape:label="99 Production Guides - hidden" display="none">
+    <rect x="40" y="40" width="1840" height="1000" fill="none" stroke="#00FFFF" stroke-width="2" stroke-dasharray="10 8"/>
+    <text x="50" y="68" fill="#00FFFF" font-family="Open Sans, Arial, sans-serif" font-size="15">40 px action safe</text>
+    <rect x="96" y="54" width="1728" height="972" fill="none" stroke="#FF00FF" stroke-width="2" stroke-dasharray="10 8"/>
+    <text x="106" y="84" fill="#FF00FF" font-family="Open Sans, Arial, sans-serif" font-size="15">5% title safe</text>
+  </g>
+</svg>

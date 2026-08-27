@@ -1,6 +1,7 @@
 from playwright.sync_api import sync_playwright
 import os
 import json
+import time
 from dotenv import load_dotenv
 import requests
 import argparse
@@ -10,8 +11,21 @@ Log into Panopto via CMU SSO/Duo in a browser and return a requests
 Session pre-loaded with the resulting authenticated cookies.
 """
 
+# Panopto's forms-auth cookie. Its arrival is what "logged in" means here --
+# csrfToken is set before login too, so waiting on that would hand back a
+# session that only fails later, in get_folder_id, with a confusing error.
+AUTH_COOKIE = ".ASPXAUTH"
+LOGIN_TIMEOUT = 600.0
 
-def get_cookies():
+
+def _auth_cookie(context):
+    for c in context.cookies():
+        if c["name"] == AUTH_COOKIE and "panopto.com" in c["domain"]:
+            return c
+    return None
+
+
+def get_cookies(timeout=LOGIN_TIMEOUT):
     load_dotenv()
 
     with sync_playwright() as p:
@@ -27,11 +41,39 @@ def get_cookies():
         print("  1. Click 'Sign in'")
         print(f"  2. Enter your Andrew ID ({sso_id or '<set SSO_ID in .env>'}) + password")
         print("  3. Approve the Duo push on your phone")
-        print("When the Panopto homepage has finished loading, return here")
-        print("and press Enter.")
-        print("=" * 70)
-        input()
+        print("Nothing to do here -- this waits for the login to land and then")
+        print("carries on by itself.")
+        print("=" * 70, flush=True)
 
+        # This used to be a bare input(): press Enter when the page has loaded.
+        # That made the stage need a TTY for no good reason -- run it anywhere
+        # stdin is not a terminal (a `!` prefix in an agent session, a pipe, a
+        # cron job) and it dies instantly with EOFError, having already opened
+        # the browser. Polling for the cookie needs no stdin at all, and is
+        # strictly more accurate besides: pressing Enter a second early handed
+        # back a half-authenticated session, and pressing it late wasted time.
+        deadline = time.time() + timeout
+        cookie, last_note = None, 0.0
+        while time.time() < deadline:
+            cookie = _auth_cookie(context)
+            if cookie:
+                break
+            waited = timeout - (deadline - time.time())
+            if waited - last_note >= 15:
+                last_note = waited
+                print(f"[ingestion] waiting for SSO + Duo ... {waited:.0f}s "
+                      f"of {timeout:.0f}s", flush=True)
+            time.sleep(2)
+
+        if not cookie:
+            context.close()
+            browser.close()
+            raise RuntimeError(
+                f"no {AUTH_COOKIE} cookie after {timeout:.0f}s -- the Panopto "
+                f"login did not complete. Re-run and finish SSO + Duo in the "
+                f"browser window, or raise --login-timeout.")
+
+        print("[ingestion] authenticated", flush=True)
         page.wait_for_url("**://scs.hosted.panopto.com/**", timeout=60000)
         cookies = context.cookies()
 
@@ -213,14 +255,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--semester", required=True, help='e.g. "Spring 2026"')
     parser.add_argument("--course", required=True, help='e.g. "10-301/601"')
+    parser.add_argument("--out", default="manifest.json",
+                        help="Where to write the manifest. Defaults to "
+                             "manifest.json, which OVERWRITES any existing one "
+                             "-- point this elsewhere when you already have a "
+                             "manifest for another course.")
+    parser.add_argument("--login-timeout", type=float, default=LOGIN_TIMEOUT,
+                        help="Seconds to wait for SSO + Duo to complete")
     args = parser.parse_args()
     search_term = f"{args.semester}:  {args.course}"
 
-    session = get_cookies()
+    session = get_cookies(timeout=args.login_timeout)
     folder_id = get_folder_id(search_term, session)
     lectures = get_lectures(folder_id, session)
     assets = get_assets(lectures, session)
-    build_manifest(assets, args.course, out_path="manifest.json")
+    build_manifest(assets, args.course, out_path=args.out)
 
 
 if __name__ == "__main__":
